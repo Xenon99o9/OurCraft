@@ -1,0 +1,53 @@
+#version: '3.8'
+
+services:
+  # 1. Base de données PostgreSQL
+  db:
+    image: postgres:15-alpine # Alpine = version très légère, parfaite pour le Raspberry Pi
+    container_name: panel_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      - pg_data:/var/lib/postgresql/data # Sauvegarde les données même si le conteneur est détruit
+    ports:
+      - "5432:5432"
+
+  # 2. Notre Backend FastAPI (Python)
+  backend:
+    build:
+      context: ./backend
+    container_name: panel_backend
+    restart: unless-stopped
+    environment:
+      # On passe l'URL de connexion complète à FastAPI
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@panel_db:5432/${DB_NAME}
+    ports:
+      - "${BACKEND_PORT}:8000"
+    volumes:
+      - ./backend:/app # Permet de modifier le code Python sans relancer Docker (Hot Reload)
+      - /var/run/docker.sock:/var/run/docker.sock # IMPORTANT : Donne accès au Docker local
+      - ./ssh_keys:/root/.ssh:ro # IMPORTANT : On préparera un dossier pour les futures clés SSH
+      - /home/xenon99o9:/home/xenon99o9
+    depends_on:
+      - db
+
+  # 3. Notre Frontend React/Vite
+  frontend:
+    build:
+      context: ./frontend
+    container_name: panel_frontend
+    restart: unless-stopped
+    ports:
+      - "5173:5173" # Port par défaut de Vite
+    volumes:
+      - ./frontend:/app # Hot Reload pour le front
+      - /app/node_modules # Astuce Docker : préserve les modules installés dans le conteneur
+    depends_on:
+      - backend
+
+# Déclaration du volume persistant pour la base de données
+volumes:
+  pg_data:

@@ -1,0 +1,7 @@
+# Ignorer les variables d'environnement !
+.env
+
+# Ignorer les dossiers générés
+node_modules/
+__pycache__/
+.venv/
