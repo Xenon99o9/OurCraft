@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useServerStore } from '../store/useServerStore';
+import { useSettingsStore } from '../store/useSettingsStore';
 
 export default function Home() {
   const { servers, isLoading, fetchServers, createServer } = useServerStore();
+  const { settings, fetchSettings } = useSettingsStore();
   const navigate = useNavigate();
   
   // États pour la modale de création
@@ -13,14 +15,14 @@ export default function Home() {
 
   useEffect(() => {
     fetchServers();
-  }, [fetchServers]);
+    fetchSettings();
+  }, [fetchServers, fetchSettings]);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newServerName.trim()) return;
     
     setIsCreating(true);
-    // On formate le nom (pas d'espaces, tout en minuscules pour Docker)
     const formattedName = newServerName.trim().toLowerCase().replace(/\s+/g, '-');
     
     const success = await createServer(formattedName);
@@ -34,10 +36,20 @@ export default function Home() {
   return (
     <div className="p-8 max-w-6xl mx-auto relative">
       
-      <header className="mb-8 flex items-center justify-between border-b border-[#1E1F22] pb-6">
+      <header className="mb-8 flex flex-col md:flex-row md:items-center justify-between border-b border-[#1E1F22] pb-6 gap-4">
         <div>
           <h1 className="text-3xl font-bold text-white tracking-wide">OurCraft</h1>
-          <p className="text-gray-400 text-sm mt-1">Tableau de bord global</p>
+          <div className="flex flex-wrap items-center gap-2 mt-1.5 text-sm text-gray-400">
+            <span>Dossier actif :</span>
+            <button
+              onClick={() => navigate('/settings')}
+              className="font-mono text-xs bg-[#2B2D31] hover:bg-[#1E1F22] text-gray-200 px-2.5 py-1 rounded border border-[#1E1F22] transition-colors flex items-center gap-1.5"
+              title="Cliquer pour changer le dossier des serveurs"
+            >
+              <span>📁 {settings.base_path || 'Chargement...'}</span>
+              <span className="text-[#5865F2]">Modifier</span>
+            </button>
+          </div>
         </div>
         <div className="flex space-x-3">
           <button 
@@ -49,8 +61,9 @@ export default function Home() {
           <button 
             onClick={() => navigate('/settings')}
             className="bg-[#2B2D31] hover:bg-[#1E1F22] border border-[#1E1F22] text-white px-4 py-2.5 rounded-md font-medium transition-colors shadow-sm"
+            title="Paramètres de l'application"
           >
-            ⚙️
+            ⚙️ Paramètres
           </button>
           <button 
             onClick={fetchServers}
@@ -66,7 +79,9 @@ export default function Home() {
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
           <div className="bg-[#313338] p-6 rounded-xl border border-[#1E1F22] shadow-2xl w-full max-w-md">
             <h2 className="text-2xl font-bold text-white mb-2">Créer un serveur</h2>
-            <p className="text-gray-400 text-sm mb-6">Le dossier et le port seront assignés automatiquement.</p>
+            <p className="text-gray-400 text-sm mb-6">
+              Sera créé dans <code className="text-gray-200 bg-[#1E1F22] px-1.5 py-0.5 rounded">{settings.base_path}</code> avec un port attribué automatiquement.
+            </p>
             
             <form onSubmit={handleCreate}>
               <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">
@@ -102,14 +117,31 @@ export default function Home() {
         </div>
       )}
 
-      {/* Reste de la page (Grille des serveurs) */}
+      {/* Grille des serveurs */}
       {isLoading ? (
         <div className="flex justify-center items-center h-40">
           <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-[#5865F2]"></div>
         </div>
       ) : servers.length === 0 ? (
-        <div className="text-center text-gray-400 mt-20 bg-[#2B2D31] p-10 rounded-xl border border-[#1E1F22]">
+        <div className="text-center text-gray-400 mt-16 bg-[#2B2D31] p-10 rounded-xl border border-[#1E1F22]">
           <p className="text-xl font-medium text-white mb-2">Aucun serveur détecté</p>
+          <p className="text-sm text-gray-400 mb-6">
+            Créez un nouveau serveur ou configurez le dossier d'installation dans les paramètres de l'application.
+          </p>
+          <div className="flex justify-center gap-3">
+            <button
+              onClick={() => setShowModal(true)}
+              className="bg-[#23A559] hover:bg-[#1D8B4A] text-white px-5 py-2 rounded-md font-medium transition-colors text-sm"
+            >
+              + Créer un serveur
+            </button>
+            <button
+              onClick={() => navigate('/settings')}
+              className="bg-[#1E1F22] hover:bg-[#111214] text-gray-200 px-5 py-2 rounded-md font-medium transition-colors text-sm border border-[#111214]"
+            >
+              ⚙️ Configurer le dossier
+            </button>
+          </div>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">

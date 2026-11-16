@@ -1,5 +1,3 @@
-#version: '3.8'
-
 services:
   # 1. Base de données PostgreSQL
   db:
@@ -7,9 +5,9 @@ services:
     container_name: panel_db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER:-ourcraft}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-ourcraft_secret}
+      POSTGRES_DB: ${DB_NAME:-ourcraft_db}
     volumes:
       - pg_data:/var/lib/postgresql/data # Sauvegarde les données même si le conteneur est détruit
     ports:
@@ -22,15 +20,18 @@ services:
     container_name: panel_backend
     restart: unless-stopped
     environment:
-      # On passe l'URL de connexion complète à FastAPI
-      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@panel_db:5432/${DB_NAME}
+      # Valeurs par défaut intégrées : fonctionne immédiatement après un git clone sans toucher au code
+      DATABASE_URL: postgresql://${DB_USER:-ourcraft}:${DB_PASSWORD:-ourcraft_secret}@panel_db:5432/${DB_NAME:-ourcraft_db}
     ports:
-      - "${BACKEND_PORT}:8000"
+      - "${BACKEND_PORT:-8000}:8000"
     volumes:
       - ./backend:/app # Permet de modifier le code Python sans relancer Docker (Hot Reload)
-      - /var/run/docker.sock:/var/run/docker.sock # IMPORTANT : Donne accès au Docker local
-      - ./ssh_keys:/root/.ssh:ro # IMPORTANT : On préparera un dossier pour les futures clés SSH
-      - /home/xenon99o9:/home/xenon99o9
+      - /var/run/docker.sock:/var/run/docker.sock # Donne accès au démon Docker de l'hôte
+      - ./ssh_keys:/root/.ssh:ro # Dossier pour les clés SSH
+      - /home:/home # Permet de choisir n'importe quel dossier utilisateur depuis l'interface Web
+      - /srv:/srv   # Supporte aussi les dossiers serveurs dans /srv
+      - /mnt:/mnt   # Supporte les disques externes / SSD montés dans /mnt
+      - /opt:/opt   # Supporte /opt
     depends_on:
       - db
 
@@ -44,7 +45,7 @@ services:
       - "5173:5173" # Port par défaut de Vite
     volumes:
       - ./frontend:/app # Hot Reload pour le front
-      - /app/node_modules # Astuce Docker : préserve les modules installés dans le conteneur
+      - /app/node_modules # Préserve les modules installés dans le conteneur
     depends_on:
       - backend
 

@@ -1,5 +1,6 @@
-# Ignorer les variables d'environnement !
+# Ignorer les variables d'environnement et la config locale par machine !
 .env
+backend/config.json
 
 # Ignorer les dossiers générés
 node_modules/

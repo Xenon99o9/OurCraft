@@ -722,15 +722,58 @@ async def delete_minecraft_server(server_name: str, db: AsyncSession = Depends(g
 
 CONFIG_FILE = "config.json"
 
+
+def detect_suggested_paths() -> list[str]:
+    """Détecte automatiquement les dossiers utilisateurs disponibles sur la machine hôte (PC, Raspberry Pi, etc.)"""
+    suggestions = []
+    if os.path.exists("/home") and os.path.isdir("/home"):
+        try:
+            for name in sorted(os.listdir("/home")):
+                user_dir = os.path.join("/home", name)
+                if os.path.isdir(user_dir) and not name.startswith("."):
+                    suggestions.append(os.path.join(user_dir, "minecraft"))
+                    suggestions.append(user_dir)
+        except Exception:
+            pass
+    suggestions.append("/srv/minecraft")
+    suggestions.append("/opt/minecraft")
+    return suggestions
+
+
+def get_default_base_path() -> str:
+    """Choisit automatiquement le meilleur dossier par défaut sur la machine actuelle"""
+    suggestions = detect_suggested_paths()
+    return suggestions[0] if suggestions else "/srv/minecraft"
+
+
 def get_config():
+    default_path = get_default_base_path()
     if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r") as f:
-            return json.load(f)
-    return {"base_path": "/home/xenon99o9", "port_min": 25565, "port_max": 25575}
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                data = json.load(f)
+            base_path = data.get("base_path") or default_path
+            return {
+                "base_path": base_path,
+                "port_min": data.get("port_min", 25565),
+                "port_max": data.get("port_max", 25575),
+                "path_exists": os.path.exists(base_path),
+                "suggested_paths": detect_suggested_paths(),
+            }
+        except Exception:
+            pass
+    return {
+        "base_path": default_path,
+        "port_min": 25565,
+        "port_max": 25575,
+        "path_exists": os.path.exists(default_path),
+        "suggested_paths": detect_suggested_paths(),
+    }
+
 
 @app.get("/api/settings")
 async def read_settings():
-    """Récupère les paramètres globaux du panel"""
+    """Récupère les paramètres globaux du panel ainsi que les chemins détectés sur la machine"""
     return get_config()
 
 @app.post("/api/servers/create")
@@ -785,7 +828,28 @@ async def create_minecraft_server(config_data: ServerCreateConfig, db: AsyncSess
 
 @app.post("/api/settings")
 async def save_settings(config: AppSettings):
-    """Sauvegarde les paramètres globaux du panel"""
+    """Sauvegarde les paramètres globaux du panel et crée automatiquement le dossier sur le disque"""
+    cleaned_path = config.base_path.strip()
+    if not cleaned_path.startswith("/"):
+        raise HTTPException(status_code=400, detail="Le chemin du dossier doit être un chemin absolu (commençant par /).")
+
+    try:
+        os.makedirs(cleaned_path, exist_ok=True)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Impossible de créer ou d'accéder au dossier '{cleaned_path}' : {str(e)}"
+        )
+
+    saved_data = {
+        "base_path": cleaned_path,
+        "port_min": config.port_min,
+        "port_max": config.port_max,
+    }
     with open(CONFIG_FILE, "w") as f:
-        json.dump(config.dict(), f, indent=4)
-    return {"status": "success", "message": "Paramètres sauvegardés"}
+        json.dump(saved_data, f, indent=4)
+    return {
+        "status": "success",
+        "message": f"Paramètres sauvegardés et dossier '{cleaned_path}' prêt !",
+        "settings": get_config(),
+    }
