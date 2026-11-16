@@ -189,6 +189,7 @@ def create_server_container(client, server: MinecraftServer):
         volumes={
             server.path: {'bind': '/data', 'mode': 'rw'}
         },
+        dns=["1.1.1.1", "8.8.8.8"],
         detach=True
     )
 
@@ -313,6 +314,7 @@ async def launch_minecraft_server(config: ServerLaunchConfig, db: AsyncSession =
                     volumes={
                         config.host_path: {'bind': '/data', 'mode': 'rw'}
                     },
+                    dns=["1.1.1.1", "8.8.8.8"],
                     detach=True 
                 )
             return {"status": "success", "message": f"Nouveau serveur '{config.name}' créé et lancé !"}

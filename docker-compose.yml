@@ -17,8 +17,12 @@ services:
   backend:
     build:
       context: ./backend
+      network: host
     container_name: panel_backend
     restart: unless-stopped
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     environment:
       # Valeurs par défaut intégrées : fonctionne immédiatement après un git clone sans toucher au code
       DATABASE_URL: postgresql://${DB_USER:-ourcraft}:${DB_PASSWORD:-ourcraft_secret}@panel_db:5432/${DB_NAME:-ourcraft_db}
@@ -39,8 +43,12 @@ services:
   frontend:
     build:
       context: ./frontend
+      network: host
     container_name: panel_frontend
     restart: unless-stopped
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     ports:
       - "5173:5173" # Port par défaut de Vite
     volumes:
