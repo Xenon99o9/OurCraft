@@ -1,14 +1,14 @@
 # 🎮 OurCraft — Panel d'Administration de Serveurs Minecraft
 
-**OurCraft** est un panel web moderne et léger permettant de créer, héberger et administrer plusieurs serveurs Minecraft conteneurisés via Docker, pensé pour être déployé en **zéro configuration fichier** sur un **Raspberry Pi** ou n'importe quel serveur Linux.
+**OurCraft** est un panel web moderne, léger et open-source permettant de créer, héberger et administrer plusieurs serveurs Minecraft conteneurisés via Docker. Il est conçu pour fonctionner sur n'importe quelle machine Linux (PC, serveur dédié, VPS, NAS ou Raspberry Pi) avec un déploiement **Zero-Config**.
 
 ---
 
 ## ✨ Fonctionnalités principales
 
 - **Déploiement "Zero-Config" (Plug & Play)** :
-  - Un simple `git clone` / `git pull` suivi de `docker compose up -d --build` suffit : aucune modification de `docker-compose.yml` ni de `.env` n'est obligatoire.
-  - Choix et création automatique du dossier d'installation des serveurs directement dans l'interface Web (**⚙️ Paramètres**), avec détection automatique des dossiers utilisateurs de la machine (`/home/pi/minecraft`, `/srv/minecraft`, etc.).
+  - Un simple `git clone` suivi de `docker compose up -d --build` suffit : aucune modification de `docker-compose.yml` ni de fichier `.env` n'est requise.
+  - Choix et création automatique du dossier d'installation des serveurs directement dans l'interface Web (**⚙️ Paramètres**), avec détection automatique des répertoires disponibles sur la machine (`/home/<user>/minecraft`, `/srv/minecraft`, `/opt/minecraft`, etc.).
 - **💻 Onglet Console (Temps réel)** :
   - Flux de logs en direct via **WebSocket** avec coloration syntaxique automatique.
   - Envoi de commandes serveur en direct via `rcon-cli`.
@@ -36,15 +36,13 @@
 
 ---
 
-## 🚀 Installation & Test sur Raspberry Pi (Sans toucher au code)
+## 🚀 Installation & Démarrage rapide
 
-### 1. Prérequis sur le Raspberry Pi
-- Un **Raspberry Pi 4 ou 5** sous **Raspberry Pi OS 64-bits**.
+### 1. Prérequis
+- Une machine sous Linux (x86_64 ou ARM64 : PC, VPS, serveur domestique, Raspberry Pi...).
 - **Docker** et **Docker Compose** installés :
 
 ```bash
-ssh <ton_user>@<IP_DU_PI>
-
 # Installer Docker si ce n'est pas déjà fait
 curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER
@@ -53,53 +51,65 @@ newgrp docker
 
 ---
 
-### 2. Cloner (ou mettre à jour) et lancer OurCraft
+### 2. Cloner et lancer OurCraft
 
-Aucune modification de fichier n'est nécessaire : `docker-compose.yml` embarque déjà des valeurs par défaut pour PostgreSQL et monte automatiquement `/home`, `/srv`, `/mnt` et `/opt`.
+Aucune modification de fichier n'est nécessaire : `docker-compose.yml` embarque déjà des valeurs par défaut pour PostgreSQL et monte automatiquement les répertoires standards (`/home`, `/srv`, `/mnt` et `/opt`).
 
 ```bash
-# Première installation :
-git clone <url_de_ton_repo> ~/OurCraft
-cd ~/OurCraft
-
-# (Ou si déjà cloné : git pull)
-
-# Lancement des conteneurs :
+git clone https://github.com/Xenon99o9/OurCraft.git
+cd OurCraft
 docker compose up -d --build
+```
+
+Vérifiez que les 3 conteneurs (`panel_db`, `panel_backend`, `panel_frontend`) sont actifs :
+```bash
+docker compose ps
 ```
 
 ---
 
-### 3. Finir toute la configuration dans l'application Web
+### 3. Configuration et utilisation dans l'interface Web
 
-1. **Ouvrir l'interface Web depuis ton PC** :
-   Rends-toi sur :
-   ```text
-   http://<IP_DU_PI>:5173
-   ```
-   *(Exemple : `http://192.168.1.50:5173` — l'interface détecte automatiquement l'adresse IP du Raspberry Pi).*
+1. **Ouvrir le Panel Web** :
+   - En local sur la machine : `http://localhost:5173`
+   - Depuis un autre appareil du réseau : `http://<IP_DE_LA_MACHINE>:5173`
+   *(L'interface détecte automatiquement l'hôte ou l'adresse IP utilisée).*
 
-2. **Choisir le dossier des serveurs dans l'interface** :
-   - Clique sur **⚙️ Paramètres** en haut à droite (ou sur le badge `Dossier actif` dans l'en-tête).
-   - Clique sur l'une des suggestions détectées automatiquement sur ton Raspberry Pi (ex: `📁 /home/pi/minecraft`) ou tape le chemin de ton choix (`/home/...`, `/mnt/...`, `/srv/...`).
-   - Clique sur **Sauvegarder (et créer le dossier)** : OurCraft crée le dossier tout seul sur le disque du Pi.
-   - *(Optionnel)* Si tu avais déjà des dossiers de serveurs à cet emplacement, clique sur **🔍 Importer les serveurs existants de ce dossier**.
+2. **Choisir le dossier des serveurs** :
+   - Cliquez sur **⚙️ Paramètres** en haut à droite (ou sur le badge `Dossier actif` dans l'en-tête).
+   - Sélectionnez en un clic l'un des chemins détectés sur votre machine (ex: `📁 /home/<votre_user>/minecraft` ou `📁 /srv/minecraft`) ou saisissez le chemin absolu de votre choix.
+   - Cliquez sur **Sauvegarder (et créer le dossier)** : OurCraft crée automatiquement le répertoire sur le disque.
+   - *(Optionnel)* Cliquez sur **🔍 Importer les serveurs existants de ce dossier** si vous avez déjà des serveurs Minecraft présents dans ce répertoire.
 
-3. **Créer, configurer et lancer ton serveur Minecraft** :
-   - Sur l'accueil, clique sur **+ Nouveau Serveur** (ex: `survie`).
-   - Ouvre la carte du serveur → onglet **⚙️ Paramètres** pour choisir la **RAM** (ex: `2G` ou `4G`), le **Moteur** (`PAPER`, `FABRIC`, `FORGE`, `VANILLA`), la **Version** et les règles de `server.properties`.
-   - Clique sur **▶ Démarrer** et suis le lancement en direct dans l'onglet **💻 Console**.
-   - Rejoins ensuite ton serveur dans Minecraft via **Multijoueur** → `<IP_DU_PI>:25565` !
+3. **Créer, configurer et lancer un serveur Minecraft** :
+   - Sur l'accueil, cliquez sur **+ Nouveau Serveur** (ex: `survie`).
+   - Ouvrez la carte du serveur → onglet **⚙️ Paramètres** pour ajuster la **RAM** (`2G`, `4G`, `8G`...), le **Moteur** (`PAPER`, `FABRIC`, `FORGE`, `VANILLA`, `PURPUR`...), la **Version** et les règles de `server.properties`.
+   - Cliquez sur **▶ Démarrer** et suivez le démarrage en direct dans l'onglet **💻 Console**.
+   - Rejoignez ensuite votre serveur dans Minecraft via **Multijoueur** → `<IP_DE_LA_MACHINE>:25565` !
 
 ---
 
-## 🔄 Mettre à jour sur le Raspberry Pi
+## 🔄 Mise à jour
 
-Lorsque de nouvelles fonctionnalités sont poussées sur GitHub, il suffit de faire sur le Raspberry Pi :
+Pour récupérer les dernières nouveautés du dépôt sans perdre vos serveurs ni votre configuration locale :
 
 ```bash
-cd ~/OurCraft
+cd OurCraft
 git pull
 docker compose up -d --build
 ```
-*(Ta configuration locale `config.json` et ta base de données PostgreSQL sont préservées automatiquement lors du `git pull`).*
+
+---
+
+## 🛠️ Commandes utiles
+
+```bash
+# Voir les logs du backend en direct
+docker compose logs -f backend
+
+# Arrêter le panel OurCraft (sans supprimer les serveurs ni la base de données)
+docker compose down
+
+# Lister tous les conteneurs (panel + serveurs Minecraft)
+docker ps -a
+```

@@ -70,7 +70,7 @@ export default function Settings() {
         <div>
           <h1 className="text-3xl font-bold text-white tracking-wide">Paramètres de l'Application</h1>
           <p className="text-gray-400 text-sm mt-1">
-            Configuration directe dans l'interface (aucune modification de fichier requise sur le serveur/Raspberry Pi)
+            Configuration directe dans l'interface (aucune modification de fichier requise sur la machine)
           </p>
         </div>
       </header>
