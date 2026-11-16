@@ -1,12 +1,22 @@
 import { create } from 'zustand'
 
-interface Server {
+export interface Server {
   id: string
   name: string
   status: string
   image: string
   path: string
   port: number
+  ram?: string
+  server_type?: string
+  version?: string
+}
+
+export interface ServerSettingsPayload {
+  port: number
+  ram: string
+  server_type: string
+  version: string
 }
 
 interface ServerStore {
@@ -15,9 +25,11 @@ interface ServerStore {
   fetchServers: () => Promise<void>
   startServer: (server: Server) => Promise<void>
   stopServer: (serverName: string) => Promise<void>
+  deleteServer: (serverName: string) => Promise<boolean>
+  createServer: (name: string) => Promise<boolean>
+  updateServerSettings: (serverName: string, settings: ServerSettingsPayload) => Promise<{ ok: boolean; message: string }>
 }
 
-// L'ajout de "get" ici permet à nos fonctions d'appeler fetchServers() pour rafraîchir la liste
 export const useServerStore = create<ServerStore>((set, get) => ({
   servers: [],
   isLoading: false,
@@ -46,12 +58,14 @@ export const useServerStore = create<ServerStore>((set, get) => ({
         body: JSON.stringify({
           name: server.name,
           host_path: server.path,
-          port: server.port
+          port: server.port,
+          ram: server.ram || '2G',
+          server_type: server.server_type || 'PAPER',
+          version: server.version || 'LATEST'
         })
       })
       
       if (response.ok) {
-        // Le serveur est lancé, on rafraîchit l'affichage pour passer la pastille au vert
         get().fetchServers()
       } else {
         console.error("Erreur renvoyée par l'API au démarrage")
@@ -68,13 +82,67 @@ export const useServerStore = create<ServerStore>((set, get) => ({
       })
       
       if (response.ok) {
-        // Le serveur est arrêté, on rafraîchit l'affichage pour passer la pastille au rouge
         get().fetchServers()
       } else {
         console.error("Erreur renvoyée par l'API à l'arrêt")
       }
     } catch (error) {
       console.error("Erreur de connexion à l'arrêt:", error)
+    }
+  },
+
+  createServer: async (name) => {
+    try {
+      const response = await fetch('http://localhost:8000/api/servers/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+      })
+      if (response.ok) {
+        get().fetchServers()
+        return true
+      }
+      const errorData = await response.json()
+      alert(`Erreur : ${errorData.detail}`)
+      return false
+    } catch (error) {
+      console.error("Erreur de création:", error)
+      return false
+    }
+  },
+
+  deleteServer: async (serverName) => {
+    try {
+      const response = await fetch(`http://localhost:8000/api/servers/${serverName}`, {
+        method: 'DELETE'
+      })
+      if (response.ok) {
+        get().fetchServers()
+        return true
+      }
+      return false
+    } catch (error) {
+      console.error("Erreur à la suppression:", error)
+      return false
+    }
+  },
+
+  updateServerSettings: async (serverName, settings) => {
+    try {
+      const response = await fetch(`http://localhost:8000/api/servers/${serverName}/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings)
+      })
+      const data = await response.json()
+      if (response.ok) {
+        await get().fetchServers()
+        return { ok: true, message: data.message || "Paramètres mis à jour !" }
+      }
+      return { ok: false, message: data.detail || "Erreur lors de la sauvegarde." }
+    } catch (error) {
+      console.error("Erreur updateServerSettings:", error)
+      return { ok: false, message: "Impossible de contacter le serveur API." }
     }
   }
 }))

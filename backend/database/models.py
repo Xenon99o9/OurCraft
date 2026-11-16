@@ -22,6 +22,9 @@ class MinecraftServer(Base):
     name: Mapped[str] = mapped_column(String(100))
     path: Mapped[str] = mapped_column(String(255)) # ex: /home/pi/minecraft/survie
     server_port: Mapped[int] = mapped_column(default=25565)
+    ram: Mapped[str] = mapped_column(String(20), default="2G")
+    server_type: Mapped[str] = mapped_column(String(50), default="PAPER")
+    version: Mapped[str] = mapped_column(String(50), default="LATEST")
 
     # Relation inverse
     node = relationship("Node", back_populates="servers")
