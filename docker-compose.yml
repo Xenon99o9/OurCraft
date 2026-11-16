@@ -1,7 +1,7 @@
 services:
   # 1. Base de données PostgreSQL
   db:
-    image: postgres:15-alpine # Alpine = version très légère, parfaite pour le Raspberry Pi
+    image: postgres:15-alpine # Alpine = version très légère, parfaite pour toute machine Linux / Raspberry Pi
     container_name: panel_db
     restart: unless-stopped
     environment:
@@ -12,6 +12,11 @@ services:
       - pg_data:/var/lib/postgresql/data # Sauvegarde les données même si le conteneur est détruit
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ourcraft} -d ${DB_NAME:-ourcraft_db}"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
 
   # 2. Notre Backend FastAPI (Python)
   backend:
@@ -20,9 +25,6 @@ services:
       network: host
     container_name: panel_backend
     restart: unless-stopped
-    dns:
-      - 1.1.1.1
-      - 8.8.8.8
     environment:
       # Valeurs par défaut intégrées : fonctionne immédiatement après un git clone sans toucher au code
       DATABASE_URL: postgresql://${DB_USER:-ourcraft}:${DB_PASSWORD:-ourcraft_secret}@panel_db:5432/${DB_NAME:-ourcraft_db}
@@ -37,7 +39,8 @@ services:
       - /mnt:/mnt   # Supporte les disques externes / SSD montés dans /mnt
       - /opt:/opt   # Supporte /opt
     depends_on:
-      - db
+      db:
+        condition: service_healthy
 
   # 3. Notre Frontend React/Vite
   frontend:
@@ -46,9 +49,6 @@ services:
       network: host
     container_name: panel_frontend
     restart: unless-stopped
-    dns:
-      - 1.1.1.1
-      - 8.8.8.8
     ports:
       - "5173:5173" # Port par défaut de Vite
     volumes:

@@ -18,24 +18,39 @@ from database.database import AsyncSessionLocal, engine, Base
 from database.models import MinecraftServer, Node
 
 
+_db_initialized = False
+
+
+async def ensure_db_schema():
+    """S'assure que les tables et colonnes existent en BDD (avec retry si PostgreSQL démarre)"""
+    global _db_initialized
+    if _db_initialized:
+        return
+    last_err = None
+    for _ in range(15):
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+                await conn.execute(text(
+                    "ALTER TABLE minecraft_servers ADD COLUMN IF NOT EXISTS ram VARCHAR(20) DEFAULT '2G' NOT NULL;"
+                ))
+                await conn.execute(text(
+                    "ALTER TABLE minecraft_servers ADD COLUMN IF NOT EXISTS server_type VARCHAR(50) DEFAULT 'PAPER' NOT NULL;"
+                ))
+                await conn.execute(text(
+                    "ALTER TABLE minecraft_servers ADD COLUMN IF NOT EXISTS version VARCHAR(50) DEFAULT 'LATEST' NOT NULL;"
+                ))
+            _db_initialized = True
+            return
+        except Exception as e:
+            last_err = e
+            await asyncio.sleep(1.5)
+    print(f"[Startup] Attention: impossible d'initialiser la BDD après plusieurs essais: {last_err}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Crée automatiquement les tables sur une nouvelle installation (ex: Raspberry Pi)
-    # et s'assure que les nouvelles colonnes existent sur une BDD existante
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-            await conn.execute(text(
-                "ALTER TABLE minecraft_servers ADD COLUMN IF NOT EXISTS ram VARCHAR(20) DEFAULT '2G' NOT NULL;"
-            ))
-            await conn.execute(text(
-                "ALTER TABLE minecraft_servers ADD COLUMN IF NOT EXISTS server_type VARCHAR(50) DEFAULT 'PAPER' NOT NULL;"
-            ))
-            await conn.execute(text(
-                "ALTER TABLE minecraft_servers ADD COLUMN IF NOT EXISTS version VARCHAR(50) DEFAULT 'LATEST' NOT NULL;"
-            ))
-    except Exception as e:
-        print(f"[Startup] Info migration auto: {e}")
+    await ensure_db_schema()
     yield
 
 
@@ -52,6 +67,8 @@ app.add_middleware(
 
 # --- DÉPENDANCE : Obtenir une connexion à la BDD pour chaque requête ---
 async def get_db():
+    if not _db_initialized:
+        await ensure_db_schema()
     async with AsyncSessionLocal() as session:
         yield session
 
@@ -241,41 +258,88 @@ async def get_minecraft_servers(db: AsyncSession = Depends(get_db)):
 @app.post("/api/servers/scan")
 async def scan_directories(request: ScanRequest, db: AsyncSession = Depends(get_db)):
     """Scanne un dossier pour trouver de nouveaux serveurs et les ajoute à la BDD"""
-    base_path = request.base_path
+    base_path = request.base_path.strip()
     
     if not os.path.exists(base_path) or not os.path.isdir(base_path):
         raise HTTPException(status_code=400, detail=f"Dossier introuvable : {base_path}")
 
-    result = await db.execute(select(Node).filter_by(id=1))
-    node = result.scalars().first()
-    if not node:
-        node = Node(id=1, name="Machine Locale", ip_address="127.0.0.1", ssh_username="local")
-        db.add(node)
-        await db.commit()
+    try:
+        result = await db.execute(select(Node).filter_by(id=1))
+        node = result.scalars().first()
+        if not node:
+            node = Node(id=1, name="Machine Locale", ip_address="127.0.0.1", ssh_username="local")
+            db.add(node)
+            await db.commit()
 
-    found_servers = []
-    for folder_name in os.listdir(base_path):
-        folder_path = os.path.join(base_path, folder_name)
-        
-        if os.path.isdir(folder_path):
-            res = await db.execute(select(MinecraftServer).filter_by(path=folder_path))
-            existing_server = res.scalars().first()
+        app_config = get_config()
+        port_min = int(app_config.get("port_min", 25565))
+        port_max = int(app_config.get("port_max", 25575))
+
+        res_ports = await db.execute(select(MinecraftServer.server_port))
+        used_ports = {p for p in res_ports.scalars().all()}
+
+        found_servers = []
+        for folder_name in sorted(os.listdir(base_path)):
+            if folder_name.startswith("."):
+                continue
+            folder_path = os.path.join(base_path, folder_name)
             
-            if not existing_server:
-                new_server = MinecraftServer(
-                    node_id=1,
-                    name=folder_name,
-                    path=folder_path,
-                    server_port=25565,
-                    ram="2G",
-                    server_type="PAPER",
-                    version="LATEST"
+            if os.path.isdir(folder_path):
+                res = await db.execute(
+                    select(MinecraftServer).filter(
+                        (MinecraftServer.path == folder_path) | (MinecraftServer.name == folder_name)
+                    )
                 )
-                db.add(new_server)
-                found_servers.append(folder_name)
+                existing_server = res.scalars().first()
+                
+                if not existing_server:
+                    # 1. Tenter de lire le port existant dans server.properties s'il existe
+                    assigned_port = None
+                    props_file = os.path.join(folder_path, "server.properties")
+                    if os.path.exists(props_file):
+                        try:
+                            with open(props_file, "r", encoding="utf-8", errors="replace") as f:
+                                for line in f:
+                                    if line.strip().startswith("server-port="):
+                                        p_val = int(line.strip().split("=", 1)[1].strip())
+                                        if p_val not in used_ports:
+                                            assigned_port = p_val
+                                        break
+                        except Exception:
+                            pass
 
-    await db.commit()
-    return {"message": "Scan terminé.", "nouveaux_serveurs_ajoutes": len(found_servers), "liste": found_servers}
+                    # 2. Sinon attribuer le premier port libre de la plage configurée
+                    if assigned_port is None:
+                        for p in range(port_min, port_max + 1):
+                            if p not in used_ports:
+                                assigned_port = p
+                                break
+                    if assigned_port is None:
+                        assigned_port = 25565
+
+                    used_ports.add(assigned_port)
+
+                    new_server = MinecraftServer(
+                        node_id=1,
+                        name=folder_name,
+                        path=folder_path,
+                        server_port=assigned_port,
+                        ram="2G",
+                        server_type="PAPER",
+                        version="LATEST"
+                    )
+                    db.add(new_server)
+                    found_servers.append(folder_name)
+
+        await db.commit()
+        return {
+            "message": "Scan terminé.",
+            "nouveaux_serveurs_ajoutes": len(found_servers),
+            "liste": found_servers
+        }
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors du scan : {str(e)}")
 
 @app.post("/api/servers/launch")
 async def launch_minecraft_server(config: ServerLaunchConfig, db: AsyncSession = Depends(get_db)):
