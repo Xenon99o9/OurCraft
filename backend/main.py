@@ -14,15 +14,17 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from database.database import AsyncSessionLocal, engine
+from database.database import AsyncSessionLocal, engine, Base
 from database.models import MinecraftServer, Node
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # S'assure que les nouvelles colonnes existent en BDD sans nécessiter de migration manuelle
+    # Crée automatiquement les tables sur une nouvelle installation (ex: Raspberry Pi)
+    # et s'assure que les nouvelles colonnes existent sur une BDD existante
     try:
         async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
             await conn.execute(text(
                 "ALTER TABLE minecraft_servers ADD COLUMN IF NOT EXISTS ram VARCHAR(20) DEFAULT '2G' NOT NULL;"
             ))
@@ -736,6 +738,12 @@ async def create_minecraft_server(config_data: ServerCreateConfig, db: AsyncSess
     """Crée un nouveau serveur de zéro (Dossier + Port dynamique + BDD)"""
     server_name = config_data.name
     
+    # 0. Sécurité : Créer le Node local s'il n'existe pas encore (ex: nouvelle installation sur Raspberry Pi)
+    node_res = await db.execute(select(Node).filter_by(id=1))
+    if not node_res.scalars().first():
+        db.add(Node(id=1, name="Machine Locale", ip_address="127.0.0.1", ssh_username="local"))
+        await db.commit()
+
     res = await db.execute(select(MinecraftServer).filter_by(name=server_name))
     if res.scalars().first():
         raise HTTPException(status_code=400, detail="Un serveur avec ce nom existe déjà.")

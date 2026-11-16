@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 
+const API_BASE = `http://${window.location.hostname}:8000`
+
 export interface Server {
   id: string
   name: string
@@ -37,7 +39,7 @@ export const useServerStore = create<ServerStore>((set, get) => ({
   fetchServers: async () => {
     set({ isLoading: true })
     try {
-      const response = await fetch('http://localhost:8000/api/servers')
+      const response = await fetch(`${API_BASE}/api/servers`)
       if (!response.ok) throw new Error('Erreur réseau')
       
       const data = await response.json()
@@ -50,7 +52,7 @@ export const useServerStore = create<ServerStore>((set, get) => ({
 
   startServer: async (server) => {
     try {
-      const response = await fetch('http://localhost:8000/api/servers/launch', {
+      const response = await fetch(`${API_BASE}/api/servers/launch`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -77,7 +79,7 @@ export const useServerStore = create<ServerStore>((set, get) => ({
 
   stopServer: async (serverName) => {
     try {
-      const response = await fetch(`http://localhost:8000/api/servers/${serverName}/stop`, {
+      const response = await fetch(`${API_BASE}/api/servers/${serverName}/stop`, {
         method: 'POST'
       })
       
@@ -93,7 +95,7 @@ export const useServerStore = create<ServerStore>((set, get) => ({
 
   createServer: async (name) => {
     try {
-      const response = await fetch('http://localhost:8000/api/servers/create', {
+      const response = await fetch(`${API_BASE}/api/servers/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name })
@@ -113,7 +115,7 @@ export const useServerStore = create<ServerStore>((set, get) => ({
 
   deleteServer: async (serverName) => {
     try {
-      const response = await fetch(`http://localhost:8000/api/servers/${serverName}`, {
+      const response = await fetch(`${API_BASE}/api/servers/${serverName}`, {
         method: 'DELETE'
       })
       if (response.ok) {
@@ -129,7 +131,7 @@ export const useServerStore = create<ServerStore>((set, get) => ({
 
   updateServerSettings: async (serverName, settings) => {
     try {
-      const response = await fetch(`http://localhost:8000/api/servers/${serverName}/settings`, {
+      const response = await fetch(`${API_BASE}/api/servers/${serverName}/settings`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settings)

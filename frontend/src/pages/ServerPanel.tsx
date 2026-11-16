@@ -2,6 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useServerStore } from '../store/useServerStore';
 
+const API_BASE = `http://${window.location.hostname}:8000`;
+const WS_BASE = `ws://${window.location.hostname}:8000`;
+
 type TabType = 'console' | 'settings' | 'players' | 'files';
 
 interface FileEntry {
@@ -147,7 +150,7 @@ export default function ServerPanel() {
     if (!serverName) return;
     setIsLoadingPlayers(true);
     try {
-      const res = await fetch(`http://localhost:8000/api/servers/${serverName}/players`);
+      const res = await fetch(`${API_BASE}/api/servers/${serverName}/players`);
       if (res.ok) {
         const data = await res.json();
         setPlayersData(data);
@@ -164,7 +167,7 @@ export default function ServerPanel() {
     if (!serverName) return;
     setIsLoadingProps(true);
     try {
-      const res = await fetch(`http://localhost:8000/api/servers/${serverName}/properties`);
+      const res = await fetch(`${API_BASE}/api/servers/${serverName}/properties`);
       if (res.ok) {
         const data = await res.json();
         setServerProps(data.properties || {});
@@ -185,7 +188,7 @@ export default function ServerPanel() {
       setFileFeedback(null);
       try {
         const res = await fetch(
-          `http://localhost:8000/api/servers/${serverName}/files?path=${encodeURIComponent(dirPath)}`
+          `${API_BASE}/api/servers/${serverName}/files?path=${encodeURIComponent(dirPath)}`
         );
         if (res.ok) {
           const data = await res.json();
@@ -214,7 +217,7 @@ export default function ServerPanel() {
 
     setLogs(['[Système] Connexion à la console en cours...']);
 
-    const ws = new WebSocket(`ws://localhost:8000/api/servers/${serverName}/ws`);
+    const ws = new WebSocket(`${WS_BASE}/api/servers/${serverName}/ws`);
     wsRef.current = ws;
 
     ws.onmessage = (event) => {
@@ -328,7 +331,7 @@ export default function ServerPanel() {
     setIsSavingProps(true);
     setPropsFeedback(null);
     try {
-      const res = await fetch(`http://localhost:8000/api/servers/${serverName}/properties`, {
+      const res = await fetch(`${API_BASE}/api/servers/${serverName}/properties`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ properties: serverProps }),
@@ -397,7 +400,7 @@ export default function ServerPanel() {
     setFileFeedback(null);
     try {
       const res = await fetch(
-        `http://localhost:8000/api/servers/${serverName}/files/content?path=${encodeURIComponent(filePath)}`
+        `${API_BASE}/api/servers/${serverName}/files/content?path=${encodeURIComponent(filePath)}`
       );
       const data = await res.json();
       if (res.ok) {
@@ -420,7 +423,7 @@ export default function ServerPanel() {
     setIsSavingFile(true);
     setFileFeedback(null);
     try {
-      const res = await fetch(`http://localhost:8000/api/servers/${serverName}/files/content`, {
+      const res = await fetch(`${API_BASE}/api/servers/${serverName}/files/content`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -449,7 +452,7 @@ export default function ServerPanel() {
     const targetRelPath = currentDir ? `${currentDir}/${newFileName.trim()}` : newFileName.trim();
     setIsSavingFile(true);
     try {
-      const res = await fetch(`http://localhost:8000/api/servers/${serverName}/files/content`, {
+      const res = await fetch(`${API_BASE}/api/servers/${serverName}/files/content`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

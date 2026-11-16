@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 
+const API_BASE = `http://${window.location.hostname}:8000`
+
 interface Settings {
   base_path: string
   port_min: number
@@ -20,7 +22,7 @@ export const useSettingsStore = create<SettingsStore>((set) => ({
   fetchSettings: async () => {
     set({ isLoading: true })
     try {
-      const response = await fetch('http://localhost:8000/api/settings')
+      const response = await fetch(`${API_BASE}/api/settings`)
       const data = await response.json()
       set({ settings: data, isLoading: false })
     } catch (error) {
@@ -32,7 +34,7 @@ export const useSettingsStore = create<SettingsStore>((set) => ({
   saveSettings: async (newSettings) => {
     set({ isLoading: true })
     try {
-      const response = await fetch('http://localhost:8000/api/settings', {
+      const response = await fetch(`${API_BASE}/api/settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newSettings)
