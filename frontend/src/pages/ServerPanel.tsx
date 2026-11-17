@@ -24,6 +24,7 @@ import {
   ServerIcon,
   CrownIcon,
   BanIcon,
+  UploadIcon,
 } from '../components/Icons';
 
 const API_BASE = `http://${window.location.hostname}:8000`;
@@ -287,6 +288,11 @@ export default function ServerPanel() {
   const [fileFeedback, setFileFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [newFileName, setNewFileName] = useState<string>('');
   const [showNewFileInput, setShowNewFileInput] = useState(false);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const [isUploadingFile, setIsUploadingFile] = useState(false);
+  const [isImportingWorld, setIsImportingWorld] = useState(false);
+  const fileUploadInputRef = useRef<HTMLInputElement>(null);
+  const worldUploadInputRef = useRef<HTMLInputElement>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
@@ -924,6 +930,69 @@ export default function ServerPanel() {
     const parts = currentDir.split('/').filter(Boolean);
     parts.pop();
     fetchDirectory(parts.join('/'));
+  };
+
+  const handleUploadFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0 || !serverName) return;
+    setIsUploadingFile(true);
+    setFileFeedback(null);
+    try {
+      for (const file of Array.from(files)) {
+        const targetRelPath = currentDir ? `${currentDir}/${file.name}` : file.name;
+        const buf = await file.arrayBuffer();
+        const res = await fetch(
+          `${API_BASE}/api/servers/${serverName}/files/upload?path=${encodeURIComponent(targetRelPath)}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: buf,
+          }
+        );
+        if (!res.ok) {
+          const err = await res.json();
+          setFileFeedback({ type: 'error', text: err.detail || `Erreur upload ${file.name}` });
+        } else {
+          setFileFeedback({ type: 'success', text: `Fichier "${file.name}" importé dans /${currentDir || 'data'} !` });
+        }
+      }
+      await fetchDirectory(currentDir);
+    } catch {
+      setFileFeedback({ type: 'error', text: "Erreur réseau lors de l'importation du fichier." });
+    } finally {
+      setIsUploadingFile(false);
+    }
+  };
+
+  const handleImportWorldZip = async (file: File | null) => {
+    if (!file || !serverName) return;
+    if (
+      !window.confirm(
+        `Importer la map "${file.name}" dans le dossier /world ?\n\nUne sauvegarde (.zip) de votre monde actuel sera créée automatiquement avant le remplacement.`
+      )
+    ) {
+      return;
+    }
+    setIsImportingWorld(true);
+    setBackupFeedback(null);
+    try {
+      const buf = await file.arrayBuffer();
+      const res = await fetch(`${API_BASE}/api/servers/${serverName}/world/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/zip' },
+        body: buf,
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setBackupFeedback({ type: 'success', text: data.message });
+        fetchBackups();
+      } else {
+        setBackupFeedback({ type: 'error', text: data.detail || "Erreur lors de l'importation de la map." });
+      }
+    } catch {
+      setBackupFeedback({ type: 'error', text: "Erreur réseau lors de l'envoi de l'archive." });
+    } finally {
+      setIsImportingWorld(false);
+    }
   };
 
   if (!server) return <div className="text-white p-8">Chargement ou serveur introuvable...</div>;
@@ -1710,7 +1779,21 @@ export default function ServerPanel() {
         {/* ========================================== */}
         {activeTab === 'files' && (
           <div className="flex-grow grid grid-cols-1 lg:grid-cols-12 gap-4 overflow-hidden min-h-0">
-            <div className="lg:col-span-5 bg-[#2B2D31] rounded-xl border border-[#1E1F22] flex flex-col overflow-hidden shadow-lg">
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                setIsDraggingOver(true);
+              }}
+              onDragLeave={() => setIsDraggingOver(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setIsDraggingOver(false);
+                handleUploadFiles(e.dataTransfer.files);
+              }}
+              className={`lg:col-span-5 bg-[#2B2D31] rounded-xl border flex flex-col overflow-hidden shadow-lg transition-colors ${
+                isDraggingOver ? 'border-[#23A559] bg-[#23A559]/10' : 'border-[#1E1F22]'
+              }`}
+            >
               <div className="p-3.5 bg-[#1E1F22] border-b border-[#2B2D31] flex flex-col gap-2 shrink-0">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center flex-wrap gap-1 text-xs font-mono text-gray-300">
@@ -1737,6 +1820,26 @@ export default function ServerPanel() {
                   </div>
 
                   <div className="flex items-center gap-1.5">
+                    <input
+                      ref={fileUploadInputRef}
+                      type="file"
+                      multiple
+                      className="hidden"
+                      onChange={(e) => {
+                        handleUploadFiles(e.target.files);
+                        e.target.value = '';
+                      }}
+                    />
+                    <button
+                      type="button"
+                      disabled={isUploadingFile}
+                      onClick={() => fileUploadInputRef.current?.click()}
+                      className="bg-[#23A559] hover:bg-[#1D8B4A] text-white px-2.5 py-1 rounded text-xs font-medium transition-colors flex items-center gap-1"
+                      title="Importer un fichier depuis votre PC (ou glisser-déposer)"
+                    >
+                      <UploadIcon className="w-3 h-3" />
+                      <span>{isUploadingFile ? '...' : 'Importer'}</span>
+                    </button>
                     <button
                       onClick={() => setShowNewFileInput((v) => !v)}
                       className="bg-[#5865F2] hover:bg-[#4752C4] text-white px-2.5 py-1 rounded text-xs font-medium transition-colors"
@@ -1945,7 +2048,27 @@ export default function ServerPanel() {
                   </p>
                 </div>
 
-                <form onSubmit={handleCreateBackup} className="flex gap-2">
+                <form onSubmit={handleCreateBackup} className="flex flex-wrap gap-2">
+                  <input
+                    ref={worldUploadInputRef}
+                    type="file"
+                    accept=".zip"
+                    className="hidden"
+                    onChange={(e) => {
+                      handleImportWorldZip(e.target.files?.[0] || null);
+                      e.target.value = '';
+                    }}
+                  />
+                  <button
+                    type="button"
+                    disabled={isImportingWorld}
+                    onClick={() => worldUploadInputRef.current?.click()}
+                    className="bg-[#1E1F22] hover:bg-[#111214] border border-[#111214] text-gray-200 px-4 py-2 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 shrink-0"
+                    title="Importer une map externe (.zip) dans /world"
+                  >
+                    <UploadIcon className="w-3.5 h-3.5 text-[#8EA1E1]" />
+                    <span>{isImportingWorld ? 'Import de la map...' : 'Importer une Map (.zip)'}</span>
+                  </button>
                   <input
                     type="text"
                     value={backupLabelInput}
@@ -2008,12 +2131,21 @@ export default function ServerPanel() {
                           </div>
 
                           <div className="flex items-center gap-2">
+                            <a
+                              href={`${API_BASE}/api/servers/${server.name}/backups/${encodeURIComponent(b.name)}/download`}
+                              download={b.name}
+                              className="bg-[#2B2D31] hover:bg-[#35373C] text-gray-200 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5"
+                              title="Télécharger cette sauvegarde .zip sur votre PC"
+                            >
+                              <DownloadIcon className="w-3.5 h-3.5 text-[#8EA1E1]" />
+                              <span>Télécharger</span>
+                            </a>
                             <button
                               onClick={() => handleRestoreBackup(b.name)}
                               disabled={isRestoring}
                               className="bg-[#5865F2] hover:bg-[#4752C4] disabled:opacity-50 text-white px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors"
                             >
-                              {isRestoring ? 'Restauration...' : '↺ Restaurer ce snapshot'}
+                              {isRestoring ? 'Restauration...' : 'Restaurer'}
                             </button>
                             <button
                               onClick={() => handleDeleteBackup(b.name)}

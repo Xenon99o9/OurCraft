@@ -16,7 +16,8 @@ import threading
 from datetime import datetime
 from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query, Header
+from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query, Header, Request
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -1074,6 +1075,33 @@ async def write_server_file(
         raise HTTPException(status_code=500, detail=f"Erreur lors de la sauvegarde : {str(e)}")
 
 
+@app.post("/api/servers/{server_name}/files/upload")
+async def upload_server_file(
+    server_name: str,
+    request: Request,
+    path: str = Query(..., description="Chemin relatif où enregistrer le fichier déposé"),
+    db: AsyncSession = Depends(get_db)
+):
+    """Téléverse un fichier binaire ou texte (Drag & Drop dans le Web FTP)"""
+    server = await get_server_or_404(server_name, db)
+    target_file = resolve_safe_path(server.path, path)
+
+    if os.path.isdir(target_file):
+        raise HTTPException(status_code=400, detail="Le chemin cible est un dossier.")
+
+    body = await request.body()
+    try:
+        os.makedirs(os.path.dirname(target_file), exist_ok=True)
+        with open(target_file, "wb") as f:
+            f.write(body)
+        return {
+            "status": "success",
+            "message": f"Fichier '{os.path.basename(target_file)}' importé ({len(body)} octets) !",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors du téléversement : {str(e)}")
+
+
 # --- WEBSOCKET CONSOLE & COMMANDES RCON ---
 
 @app.websocket("/api/servers/{server_name}/ws")
@@ -1794,6 +1822,106 @@ async def delete_server_backup(
 
     os.remove(target_zip)
     return {"status": "success", "message": f"Snapshot '{backup_name}' supprimé."}
+
+
+@app.get("/api/servers/{server_name}/backups/{backup_name}/download")
+async def download_server_backup(
+    server_name: str,
+    backup_name: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Télécharge une archive de sauvegarde (.zip) sur le PC de l'utilisateur"""
+    server = await get_server_or_404(server_name, db)
+    backup_dir = os.path.join(server.path, BACKUP_FOLDER_NAME)
+    target_zip = resolve_safe_path(backup_dir, backup_name)
+
+    if not os.path.exists(target_zip) or not os.path.isfile(target_zip):
+        raise HTTPException(status_code=404, detail="Snapshot introuvable.")
+
+    return FileResponse(
+        path=target_zip,
+        media_type="application/zip",
+        filename=backup_name,
+    )
+
+
+def _import_world_zip_sync(server_path: str, zip_bytes: bytes):
+    """Sauvegarde l'ancien monde, puis extrait une archive de map (.zip) dans /world"""
+    _create_backup_zip_sync(server_path, "avant-import-map")
+
+    backup_dir = os.path.join(server_path, BACKUP_FOLDER_NAME)
+    os.makedirs(backup_dir, exist_ok=True)
+    tmp_zip = os.path.join(backup_dir, "_upload_world_tmp.zip")
+    tmp_extract = os.path.join(backup_dir, "_upload_world_extract")
+
+    if os.path.exists(tmp_extract):
+        shutil.rmtree(tmp_extract, ignore_errors=True)
+
+    with open(tmp_zip, "wb") as f:
+        f.write(zip_bytes)
+
+    try:
+        with zipfile.ZipFile(tmp_zip, "r") as zf:
+            zf.extractall(tmp_extract)
+
+        # Trouver le dossier qui contient level.dat (soit à la racine du zip, soit dans un sous-dossier)
+        source_world_dir = tmp_extract
+        if not os.path.exists(os.path.join(tmp_extract, "level.dat")):
+            for root, dirs, files in os.walk(tmp_extract):
+                if "level.dat" in files:
+                    source_world_dir = root
+                    break
+
+        target_world_dir = os.path.join(server_path, "world")
+        if os.path.exists(target_world_dir):
+            shutil.rmtree(target_world_dir, ignore_errors=True)
+
+        shutil.copytree(source_world_dir, target_world_dir)
+    finally:
+        if os.path.exists(tmp_zip):
+            os.remove(tmp_zip)
+        if os.path.exists(tmp_extract):
+            shutil.rmtree(tmp_extract, ignore_errors=True)
+
+
+@app.post("/api/servers/{server_name}/world/import")
+async def import_custom_world_zip(
+    server_name: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """Importe une map Minecraft (.zip) dans le dossier world/ du serveur (avec snapshot automatique avant)"""
+    server = await get_server_or_404(server_name, db)
+    zip_bytes = await request.body()
+    if not zip_bytes:
+        raise HTTPException(status_code=400, detail="Fichier .zip vide.")
+
+    client = docker.from_env()
+    was_running = False
+    container = None
+    try:
+        container = client.containers.get(f"ourcraft_{server_name}")
+        was_running = container.status == "running"
+        if was_running:
+            container.stop(timeout=10)
+    except docker.errors.NotFound:
+        pass
+
+    try:
+        await asyncio.to_thread(_import_world_zip_sync, server.path, zip_bytes)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Archive de map invalide : {str(e)}")
+
+    if was_running and container:
+        try:
+            container.start()
+        except Exception:
+            pass
+
+    return {
+        "status": "success",
+        "message": "Nouvelle map importée dans /world avec succès (une sauvegarde de l'ancien monde a été créée automatiquement) !",
+    }
 
 
 # ==============================================================================
