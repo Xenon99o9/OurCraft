@@ -21,6 +21,21 @@ export interface ServerSettingsPayload {
   version: string
 }
 
+export interface CreateServerPayload {
+  name: string
+  server_type: string
+  version: string
+  ram: string
+}
+
+export interface ImportCandidate {
+  name: string
+  path: string
+  already_imported: boolean
+  is_minecraft_dir: boolean
+  detected_port: number | null
+}
+
 interface ServerStore {
   servers: Server[]
   isLoading: boolean
@@ -28,8 +43,10 @@ interface ServerStore {
   startServer: (server: Server) => Promise<void>
   stopServer: (serverName: string) => Promise<void>
   deleteServer: (serverName: string) => Promise<boolean>
-  createServer: (name: string) => Promise<boolean>
+  createServer: (payload: CreateServerPayload) => Promise<{ ok: boolean; message: string }>
   updateServerSettings: (serverName: string, settings: ServerSettingsPayload) => Promise<{ ok: boolean; message: string }>
+  fetchImportCandidates: (basePath?: string) => Promise<{ base_path: string; exists: boolean; candidates: ImportCandidate[] }>
+  importServers: (basePath: string, selectedFolders: string[]) => Promise<{ ok: boolean; message: string; added: number }>
 }
 
 export const useServerStore = create<ServerStore>((set, get) => ({
@@ -93,23 +110,22 @@ export const useServerStore = create<ServerStore>((set, get) => ({
     }
   },
 
-  createServer: async (name) => {
+  createServer: async (payload) => {
     try {
       const response = await fetch(`${API_BASE}/api/servers/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name })
+        body: JSON.stringify(payload)
       })
+      const data = await response.json()
       if (response.ok) {
-        get().fetchServers()
-        return true
+        await get().fetchServers()
+        return { ok: true, message: data.message || "Serveur créé avec succès !" }
       }
-      const errorData = await response.json()
-      alert(`Erreur : ${errorData.detail}`)
-      return false
+      return { ok: false, message: data.detail || "Erreur lors de la création du serveur." }
     } catch (error) {
       console.error("Erreur de création:", error)
-      return false
+      return { ok: false, message: "Impossible de contacter l'API." }
     }
   },
 
@@ -145,6 +161,44 @@ export const useServerStore = create<ServerStore>((set, get) => ({
     } catch (error) {
       console.error("Erreur updateServerSettings:", error)
       return { ok: false, message: "Impossible de contacter le serveur API." }
+    }
+  },
+
+  fetchImportCandidates: async (basePath) => {
+    try {
+      const query = basePath ? `?base_path=${encodeURIComponent(basePath)}` : ''
+      const response = await fetch(`${API_BASE}/api/servers/import/candidates${query}`)
+      if (response.ok) {
+        return await response.json()
+      }
+    } catch (error) {
+      console.error("Erreur fetchImportCandidates:", error)
+    }
+    return { base_path: basePath || '', exists: false, candidates: [] }
+  },
+
+  importServers: async (basePath, selectedFolders) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/servers/scan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          base_path: basePath,
+          selected_folders: selectedFolders
+        })
+      })
+      const data = await response.json()
+      if (response.ok) {
+        await get().fetchServers()
+        return {
+          ok: true,
+          message: `${data.nouveaux_serveurs_ajoutes} serveur(s) importé(s) avec succès !`,
+          added: data.nouveaux_serveurs_ajoutes
+        }
+      }
+      return { ok: false, message: data.detail || "Erreur lors de l'importation.", added: 0 }
+    } catch {
+      return { ok: false, message: "Erreur réseau lors de l'importation.", added: 0 }
     }
   }
 }))

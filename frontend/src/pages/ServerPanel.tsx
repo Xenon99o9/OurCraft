@@ -486,13 +486,51 @@ export default function ServerPanel() {
 
   if (!server) return <div className="text-white p-8">Chargement ou serveur introuvable...</div>;
 
-  const tabs: { id: TabType; label: string; icon: string; badge?: string | number }[] = [
-    { id: 'console', label: 'Console', icon: '💻' },
-    { id: 'settings', label: 'Paramètres', icon: '⚙️' },
-    { id: 'players', label: 'Joueurs', icon: '👥', badge: isRunning ? playersData.count : undefined },
-    { id: 'files', label: 'Fichiers (Web FTP)', icon: '📁' },
+  const tabs: {
+    id: TabType;
+    label: string;
+    subtitle: string;
+    fullTitle: string;
+    description: string;
+    icon: string;
+    badge?: string | number;
+  }[] = [
+    {
+      id: 'console',
+      label: 'Console',
+      subtitle: 'Terminal & RCON',
+      fullTitle: 'Console Temps Réel & Commandes RCON',
+      description: 'Suivez les logs du conteneur en direct via WebSocket et exécutez vos commandes administrateur.',
+      icon: '💻',
+    },
+    {
+      id: 'settings',
+      label: 'Paramètres',
+      subtitle: 'Docker & Propriétés',
+      fullTitle: 'Configuration du Serveur & Moteur Docker',
+      description: 'Ajustez le port, la mémoire RAM, la version du jeu et les règles de server.properties.',
+      icon: '⚙️',
+    },
+    {
+      id: 'players',
+      label: 'Joueurs',
+      subtitle: 'En ligne & Modération',
+      fullTitle: 'Joueurs Connectés & Modération en Direct',
+      description: 'Visualisez les joueurs actifs sur le serveur et appliquez des actions rapides (OP, Kick, Ban).',
+      icon: '👥',
+      badge: isRunning ? `${playersData.count}/${playersData.max}` : undefined,
+    },
+    {
+      id: 'files',
+      label: 'Fichiers',
+      subtitle: 'Explorateur Web FTP',
+      fullTitle: 'Explorateur de Fichiers & Éditeur de Configuration',
+      description: 'Parcourez l’arborescence du serveur (/data) et modifiez vos fichiers .yml, .json ou .properties.',
+      icon: '📁',
+    },
   ];
 
+  const currentTabInfo = tabs.find((t) => t.id === activeTab) || tabs[0];
   const hasUnsavedFileChanges = selectedFilePath !== null && editorContent !== originalContent;
   const breadcrumbs = currentDir ? currentDir.split('/').filter(Boolean) : [];
 
@@ -564,26 +602,39 @@ export default function ServerPanel() {
         </div>
       </header>
 
-      {/* BARRE D'ONGLETS */}
-      <nav className="flex flex-wrap gap-2 mb-4 bg-[#1E1F22] p-1.5 rounded-xl border border-[#2B2D31] w-fit shrink-0">
+      {/* BARRE D'ONGLETS REDESIGNÉE */}
+      <nav className="grid grid-cols-2 md:grid-cols-4 gap-2.5 mb-4 shrink-0">
         {tabs.map((tab) => {
           const isActive = activeTab === tab.id;
           return (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+              className={`flex items-center justify-between p-3.5 rounded-xl border text-left transition-all ${
                 isActive
-                  ? 'bg-[#5865F2] text-white shadow'
-                  : 'text-gray-400 hover:text-white hover:bg-[#2B2D31]'
+                  ? 'bg-[#5865F2] border-[#5865F2] text-white shadow-lg'
+                  : 'bg-[#2B2D31] border-[#1E1F22] text-gray-300 hover:bg-[#35373C] hover:text-white'
               }`}
             >
-              <span>{tab.icon}</span>
-              <span>{tab.label}</span>
+              <div className="flex items-center space-x-3 min-w-0">
+                <span
+                  className={`w-10 h-10 rounded-lg flex items-center justify-center text-lg shrink-0 ${
+                    isActive ? 'bg-white/20' : 'bg-[#1E1F22]'
+                  }`}
+                >
+                  {tab.icon}
+                </span>
+                <div className="min-w-0">
+                  <div className="font-bold text-sm truncate">{tab.label}</div>
+                  <div className={`text-xs truncate ${isActive ? 'text-indigo-100' : 'text-gray-400'}`}>
+                    {tab.subtitle}
+                  </div>
+                </div>
+              </div>
               {tab.badge !== undefined && (
                 <span
-                  className={`ml-1.5 px-2 py-0.5 text-xs rounded-full font-bold ${
-                    isActive ? 'bg-white/20 text-white' : 'bg-[#2B2D31] text-gray-300'
+                  className={`ml-2 px-2 py-0.5 text-xs rounded-full font-mono font-bold shrink-0 ${
+                    isActive ? 'bg-white/25 text-white' : 'bg-[#1E1F22] text-[#23A559]'
                   }`}
                 >
                   {tab.badge}
@@ -593,6 +644,20 @@ export default function ServerPanel() {
           );
         })}
       </nav>
+
+      {/* BANNIÈRE DE TITRE DE L'ONGLET ACTIF */}
+      <div className="mb-4 px-5 py-3.5 bg-[#1E1F22] rounded-xl border border-[#2B2D31] flex flex-col sm:flex-row sm:items-center justify-between gap-2 shrink-0">
+        <div className="flex items-center space-x-3">
+          <span className="text-xl">{currentTabInfo.icon}</span>
+          <div>
+            <h2 className="text-base font-bold text-white tracking-wide">{currentTabInfo.fullTitle}</h2>
+            <p className="text-xs text-gray-400">{currentTabInfo.description}</p>
+          </div>
+        </div>
+        <div className="text-xs font-mono text-gray-400 shrink-0 bg-[#2B2D31] px-3 py-1 rounded-md border border-[#111214]">
+          Conteneur: <span className="text-gray-200">ourcraft_{server.name}</span>
+        </div>
+      </div>
 
       {/* CONTENU DE L'ONGLET ACTIF */}
       <div className="flex-grow flex flex-col overflow-hidden min-h-0">

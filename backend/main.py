@@ -75,6 +75,7 @@ async def get_db():
 # --- MODÈLES DE DONNÉES (Pour recevoir les JSON du Front-end) ---
 class ScanRequest(BaseModel):
     base_path: str
+    selected_folders: Optional[list[str]] = None
 
 class ServerLaunchConfig(BaseModel):
     name: str
@@ -104,6 +105,9 @@ class AppSettings(BaseModel):
 
 class ServerCreateConfig(BaseModel):
     name: str
+    server_type: str = "PAPER"
+    version: str = "LATEST"
+    ram: str = "2G"
 
 
 # --- UTILITAIRES ---
@@ -255,9 +259,71 @@ async def get_minecraft_servers(db: AsyncSession = Depends(get_db)):
         
     return server_list
 
+@app.get("/api/servers/import/candidates")
+async def get_import_candidates(
+    base_path: Optional[str] = Query(None, description="Dossier à analyser (par défaut le dossier configuré)"),
+    db: AsyncSession = Depends(get_db)
+):
+    """Liste les sous-dossiers non encore importés pour la modale d'importation dédiée"""
+    app_config = get_config()
+    target_base = (base_path or app_config["base_path"]).strip()
+
+    if not os.path.exists(target_base) or not os.path.isdir(target_base):
+        return {"base_path": target_base, "exists": False, "candidates": []}
+
+    res = await db.execute(select(MinecraftServer))
+    existing_servers = res.scalars().all()
+    existing_paths = {os.path.realpath(s.path) for s in existing_servers}
+    existing_names = {s.name.lower() for s in existing_servers}
+
+    candidates = []
+    try:
+        for folder_name in sorted(os.listdir(target_base)):
+            if folder_name.startswith("."):
+                continue
+            folder_path = os.path.join(target_base, folder_name)
+            if not os.path.isdir(folder_path):
+                continue
+
+            already_imported = (
+                os.path.realpath(folder_path) in existing_paths
+                or folder_name.lower() in existing_names
+            )
+
+            props_file = os.path.join(folder_path, "server.properties")
+            has_properties = os.path.exists(props_file)
+            has_world = os.path.exists(os.path.join(folder_path, "world"))
+            detected_port = None
+            if has_properties:
+                try:
+                    with open(props_file, "r", encoding="utf-8", errors="replace") as f:
+                        for line in f:
+                            if line.strip().startswith("server-port="):
+                                detected_port = int(line.strip().split("=", 1)[1].strip())
+                                break
+                except Exception:
+                    pass
+
+            candidates.append({
+                "name": folder_name,
+                "path": folder_path,
+                "already_imported": already_imported,
+                "is_minecraft_dir": has_properties or has_world,
+                "detected_port": detected_port,
+            })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Impossible de lire le dossier : {str(e)}")
+
+    return {
+        "base_path": target_base,
+        "exists": True,
+        "candidates": candidates,
+    }
+
+
 @app.post("/api/servers/scan")
 async def scan_directories(request: ScanRequest, db: AsyncSession = Depends(get_db)):
-    """Scanne un dossier pour trouver de nouveaux serveurs et les ajoute à la BDD"""
+    """Importe les serveurs d'un dossier (tous ou uniquement ceux sélectionnés dans la modale d'importation)"""
     base_path = request.base_path.strip()
     
     if not os.path.exists(base_path) or not os.path.isdir(base_path):
@@ -278,10 +344,15 @@ async def scan_directories(request: ScanRequest, db: AsyncSession = Depends(get_
         res_ports = await db.execute(select(MinecraftServer.server_port))
         used_ports = {p for p in res_ports.scalars().all()}
 
+        allowed_set = set(request.selected_folders) if request.selected_folders is not None else None
+
         found_servers = []
         for folder_name in sorted(os.listdir(base_path)):
             if folder_name.startswith("."):
                 continue
+            if allowed_set is not None and folder_name not in allowed_set:
+                continue
+
             folder_path = os.path.join(base_path, folder_name)
             
             if os.path.isdir(folder_path):
@@ -333,13 +404,13 @@ async def scan_directories(request: ScanRequest, db: AsyncSession = Depends(get_
 
         await db.commit()
         return {
-            "message": "Scan terminé.",
+            "message": "Importation terminée.",
             "nouveaux_serveurs_ajoutes": len(found_servers),
             "liste": found_servers
         }
     except Exception as e:
         await db.rollback()
-        raise HTTPException(status_code=500, detail=f"Erreur lors du scan : {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erreur lors de l'importation : {str(e)}")
 
 @app.post("/api/servers/launch")
 async def launch_minecraft_server(config: ServerLaunchConfig, db: AsyncSession = Depends(get_db)):
@@ -883,14 +954,17 @@ async def create_minecraft_server(config_data: ServerCreateConfig, db: AsyncSess
         name=server_name,
         path=server_path,
         server_port=available_port,
-        ram="2G",
-        server_type="PAPER",
-        version="LATEST"
+        ram=(config_data.ram or "2G").strip().upper(),
+        server_type=(config_data.server_type or "PAPER").strip().upper(),
+        version=(config_data.version or "LATEST").strip()
     )
     db.add(new_server)
     await db.commit()
     
-    return {"status": "success", "message": f"Serveur '{server_name}' créé avec succès sur le port {available_port} !"}
+    return {
+        "status": "success",
+        "message": f"Serveur '{server_name}' ({new_server.server_type} {new_server.version}) créé sur le port {available_port} !"
+    }
 
 @app.post("/api/settings")
 async def save_settings(config: AppSettings):

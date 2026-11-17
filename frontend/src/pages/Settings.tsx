@@ -1,12 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSettingsStore } from '../store/useSettingsStore';
-import { useServerStore } from '../store/useServerStore';
 
 export default function Settings() {
   const navigate = useNavigate();
-  const { settings, fetchSettings, saveSettings, scanDirectory } = useSettingsStore();
-  const { fetchServers } = useServerStore();
+  const { settings, fetchSettings, saveSettings } = useSettingsStore();
 
   const [formData, setFormData] = useState({
     base_path: settings.base_path,
@@ -14,7 +12,6 @@ export default function Settings() {
     port_max: settings.port_max,
   });
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const [isScanning, setIsScanning] = useState(false);
 
   useEffect(() => {
     fetchSettings();
@@ -36,26 +33,6 @@ export default function Settings() {
       type: res.ok ? 'success' : 'error',
       text: res.message,
     });
-  };
-
-  const handleScanExisting = async () => {
-    setFeedback(null);
-    setIsScanning(true);
-    // On sauvegarde d'abord le chemin pour s'assurer qu'il existe
-    const saveRes = await saveSettings(formData);
-    if (!saveRes.ok) {
-      setFeedback({ type: 'error', text: saveRes.message });
-      setIsScanning(false);
-      return;
-    }
-
-    const scanRes = await scanDirectory(formData.base_path);
-    await fetchServers();
-    setFeedback({
-      type: scanRes.ok ? 'success' : 'error',
-      text: scanRes.message,
-    });
-    setIsScanning(false);
   };
 
   return (
@@ -151,7 +128,7 @@ export default function Settings() {
           <div>
             <label className="block text-white font-medium mb-2">Plage de ports dynamiques</label>
             <p className="text-sm text-gray-400 mb-3">
-              OurCraft attribuera automatiquement un port disponible dans cette plage lors de la création d'un serveur.
+              OurCraft attribuera automatiquement un port disponible dans cette plage lors de la création ou de l'importation d'un serveur.
             </p>
             <div className="flex items-center space-x-4">
               <div className="flex-1">
@@ -179,21 +156,12 @@ export default function Settings() {
           </div>
         </div>
 
-        <div className="mt-8 flex flex-wrap items-center justify-between gap-4 pt-4 border-t border-[#1E1F22]">
+        <div className="mt-8 flex items-center justify-end pt-4 border-t border-[#1E1F22]">
           <button
             type="submit"
             className="bg-[#5865F2] hover:bg-[#4752C4] text-white px-6 py-2.5 rounded-md font-medium transition-colors shadow-md"
           >
-            Sauvegarder (et créer le dossier)
-          </button>
-
-          <button
-            type="button"
-            onClick={handleScanExisting}
-            disabled={isScanning}
-            className="bg-[#1E1F22] hover:bg-[#111214] border border-[#111214] text-gray-200 px-5 py-2.5 rounded-md font-medium transition-colors text-sm"
-          >
-            {isScanning ? 'Scan en cours...' : '🔍 Importer les serveurs existants de ce dossier'}
+            Sauvegarder les paramètres
           </button>
         </div>
       </form>
