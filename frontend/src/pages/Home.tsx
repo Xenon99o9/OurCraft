@@ -183,173 +183,139 @@ export default function Home() {
   return (
     <div className="p-6 md:p-8 max-w-7xl mx-auto relative">
       {/* HEADER PRINCIPAL : TOUS LES BOUTONS SUR UNE SEULE LIGNE + COMPTE EN HAUT À DROITE */}
-      <header className="mb-8 border-b border-[#1E1F22] pb-5">
-        <div className="flex items-center justify-between gap-4 overflow-x-auto pb-1">
-          {/* GAUCHE : Logo & Répertoire */}
-          <div className="flex items-center gap-4 shrink-0">
-            <div className="flex items-center gap-2.5">
-              <h1 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight">OurCraft</h1>
-              <span className="bg-[#5865F2]/20 text-[#8EA1E1] border border-[#5865F2]/30 text-[11px] font-bold px-2.5 py-0.5 rounded-full">
-                V2 Panel
-              </span>
-            </div>
+      <header className="mb-8 border-b border-[#1E1F22] pb-5 flex items-center justify-between gap-4">
+        {/* GAUCHE : Titre épuré */}
+        <h1 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight shrink-0">
+          OurCraft
+        </h1>
 
-            {isAdmin && (
+        {/* DROITE : Tous les boutons d'action + Compte connecté tout à droite sur la même ligne */}
+        <div className="flex items-center gap-2 shrink-0">
+          {isAdmin && (
+            <>
+              <button
+                onClick={openCreateModal}
+                className="bg-[#23A559] hover:bg-[#1D8B4A] text-white px-3.5 py-2 rounded-lg font-semibold transition-colors shadow-sm flex items-center gap-1.5 text-xs whitespace-nowrap"
+              >
+                <PlusIcon className="w-4 h-4" />
+                <span>Nouveau Serveur</span>
+              </button>
+
+              <button
+                onClick={openImportModal}
+                className="bg-[#2B2D31] hover:bg-[#1E1F22] border border-[#1E1F22] text-white px-3 py-2 rounded-lg font-medium transition-colors flex items-center gap-1.5 text-xs whitespace-nowrap"
+              >
+                <DownloadIcon className="w-3.5 h-3.5 text-[#8EA1E1]" />
+                <span>Importer</span>
+              </button>
+
+              <button
+                onClick={() => navigate('/security')}
+                className="bg-[#2B2D31] hover:bg-[#1E1F22] border border-[#1E1F22] text-amber-300 px-3 py-2 rounded-lg font-medium transition-colors flex items-center gap-1.5 text-xs whitespace-nowrap"
+                title="Bouclier Réseau & Anti-Attaques"
+              >
+                <ShieldIcon className="w-3.5 h-3.5" />
+                <span>Bouclier</span>
+              </button>
+
+              <button
+                onClick={() => navigate('/users')}
+                className="bg-[#2B2D31] hover:bg-[#1E1F22] border border-[#1E1F22] text-gray-200 px-3 py-2 rounded-lg font-medium transition-colors flex items-center gap-1.5 text-xs whitespace-nowrap"
+                title="Gestion des comptes & droits par serveur"
+              >
+                <UsersIcon className="w-3.5 h-3.5 text-[#8EA1E1]" />
+                <span>Comptes</span>
+              </button>
+
               <button
                 onClick={() => navigate('/settings')}
-                className="hidden xl:flex font-mono text-xs bg-[#2B2D31] hover:bg-[#1E1F22] text-gray-300 px-3 py-1.5 rounded-lg border border-[#1E1F22] transition-colors items-center gap-2"
-                title="Changer le répertoire des serveurs"
+                className="bg-[#2B2D31] hover:bg-[#1E1F22] border border-[#1E1F22] text-gray-200 p-2 rounded-lg transition-colors"
+                title="Paramètres globaux de l'application"
               >
-                <FolderIcon className="w-3.5 h-3.5 text-[#8EA1E1]" />
-                <span>{settings.base_path || 'Chargement...'}</span>
-                <span className="text-[#5865F2] font-sans font-semibold ml-1">Modifier</span>
+                <SettingsIcon className="w-4 h-4" />
               </button>
-            )}
-          </div>
+            </>
+          )}
 
-          {/* DROITE : Tous les boutons d'action + Compte connecté tout à droite sur la même ligne */}
-          <div className="flex items-center gap-2 shrink-0">
-            {isAdmin && (
-              <>
-                <button
-                  onClick={openCreateModal}
-                  className="bg-[#23A559] hover:bg-[#1D8B4A] text-white px-3.5 py-2 rounded-lg font-semibold transition-colors shadow-sm flex items-center gap-1.5 text-xs whitespace-nowrap"
-                >
-                  <PlusIcon className="w-4 h-4" />
-                  <span>Nouveau Serveur</span>
-                </button>
+          <button
+            onClick={fetchServers}
+            className="bg-[#2B2D31] hover:bg-[#1E1F22] border border-[#1E1F22] text-gray-300 hover:text-white p-2 rounded-lg transition-colors"
+            title="Rafraîchir l'état des serveurs"
+          >
+            <RefreshIcon className="w-4 h-4" />
+          </button>
 
-                <button
-                  onClick={openImportModal}
-                  className="bg-[#2B2D31] hover:bg-[#1E1F22] border border-[#1E1F22] text-white px-3 py-2 rounded-lg font-medium transition-colors flex items-center gap-1.5 text-xs whitespace-nowrap"
-                >
-                  <DownloadIcon className="w-3.5 h-3.5 text-[#8EA1E1]" />
-                  <span>Importer</span>
-                </button>
+          <div className="w-px h-6 bg-[#1E1F22] mx-1" />
 
-                <button
-                  onClick={() => navigate('/security')}
-                  className="bg-[#2B2D31] hover:bg-[#1E1F22] border border-[#1E1F22] text-amber-300 px-3 py-2 rounded-lg font-medium transition-colors flex items-center gap-1.5 text-xs whitespace-nowrap"
-                  title="Bouclier Réseau & Anti-Attaques"
-                >
-                  <ShieldIcon className="w-3.5 h-3.5" />
-                  <span>Bouclier</span>
-                </button>
-
-                <button
-                  onClick={() => navigate('/users')}
-                  className="bg-[#2B2D31] hover:bg-[#1E1F22] border border-[#1E1F22] text-gray-200 px-3 py-2 rounded-lg font-medium transition-colors flex items-center gap-1.5 text-xs whitespace-nowrap"
-                  title="Gestion des comptes & droits par serveur"
-                >
-                  <UsersIcon className="w-3.5 h-3.5 text-[#8EA1E1]" />
-                  <span>Comptes</span>
-                </button>
-
-                <button
-                  onClick={() => navigate('/settings')}
-                  className="bg-[#2B2D31] hover:bg-[#1E1F22] border border-[#1E1F22] text-gray-200 p-2 rounded-lg transition-colors"
-                  title="Paramètres globaux de l'application"
-                >
-                  <SettingsIcon className="w-4 h-4" />
-                </button>
-              </>
-            )}
-
+          {/* Sélecteur de Thème sauvegardé sur le compte */}
+          <div className="relative">
             <button
-              onClick={fetchServers}
-              className="bg-[#2B2D31] hover:bg-[#1E1F22] border border-[#1E1F22] text-gray-300 hover:text-white p-2 rounded-lg transition-colors"
-              title="Rafraîchir l'état des serveurs"
+              onClick={() => setShowThemeMenu((v) => !v)}
+              className="bg-[#2B2D31] hover:bg-[#1E1F22] border border-[#1E1F22] text-gray-200 px-2.5 py-2 rounded-lg flex items-center gap-1.5 text-xs font-medium transition-colors"
+              title="Changer le thème visuel de votre compte"
             >
-              <RefreshIcon className="w-4 h-4" />
+              <PaletteIcon className="w-3.5 h-3.5 text-[#8EA1E1]" />
+              <span
+                className="w-2.5 h-2.5 rounded-full"
+                style={{ backgroundColor: currentTheme.color }}
+              />
             </button>
 
-            <div className="w-px h-6 bg-[#1E1F22] mx-1" />
-
-            {/* Sélecteur de Thème sauvegardé sur le compte */}
-            <div className="relative">
-              <button
-                onClick={() => setShowThemeMenu((v) => !v)}
-                className="bg-[#2B2D31] hover:bg-[#1E1F22] border border-[#1E1F22] text-gray-200 px-2.5 py-2 rounded-lg flex items-center gap-1.5 text-xs font-medium transition-colors"
-                title="Changer le thème visuel de votre compte"
-              >
-                <PaletteIcon className="w-3.5 h-3.5 text-[#8EA1E1]" />
-                <span
-                  className="w-2.5 h-2.5 rounded-full"
-                  style={{ backgroundColor: currentTheme.color }}
-                />
-              </button>
-
-              {showThemeMenu && (
-                <div className="absolute right-0 mt-2 w-48 bg-[#2B2D31] border border-[#111214] rounded-xl shadow-2xl p-1.5 z-50">
-                  <div className="px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-400">
-                    Thème du compte ({user?.username})
-                  </div>
-                  {APP_THEMES.map((t) => {
-                    const isSelected = (user?.theme || 'discord') === t.id;
-                    return (
-                      <button
-                        key={t.id}
-                        type="button"
-                        onClick={() => {
-                          updateTheme(t.id as AppThemeId);
-                          setShowThemeMenu(false);
-                        }}
-                        className={`w-full px-3 py-2 rounded-lg text-xs flex items-center justify-between transition-colors ${
-                          isSelected
-                            ? 'bg-[#5865F2] text-white font-semibold'
-                            : 'text-gray-300 hover:bg-[#1E1F22]'
-                        }`}
-                      >
-                        <span className="flex items-center gap-2">
-                          <span
-                            className="w-3 h-3 rounded-full border border-white/30"
-                            style={{ backgroundColor: t.color }}
-                          />
-                          <span>{t.label}</span>
-                        </span>
-                        {isSelected && <span>✓</span>}
-                      </button>
-                    );
-                  })}
+            {showThemeMenu && (
+              <div className="absolute right-0 mt-2 w-48 bg-[#2B2D31] border border-[#111214] rounded-xl shadow-2xl p-1.5 z-50">
+                <div className="px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                  Thème du compte ({user?.username})
                 </div>
-              )}
-            </div>
-
-            {/* Badge du compte connecté tout en haut à droite */}
-            {user && (
-              <div className="bg-[#2B2D31] border border-[#1E1F22] text-gray-200 text-xs px-3 py-1.5 rounded-lg flex items-center gap-2 whitespace-nowrap">
-                {isAdmin ? (
-                  <CrownIcon className="w-3.5 h-3.5 text-amber-400" />
-                ) : (
-                  <UserIcon className="w-3.5 h-3.5 text-[#8EA1E1]" />
-                )}
-                <span className="font-bold text-white">{user.username}</span>
-                <button
-                  onClick={logout}
-                  className="ml-1 pl-2 border-l border-[#1E1F22] text-gray-400 hover:text-[#DA373C] flex items-center gap-1 transition-colors"
-                  title="Se déconnecter"
-                >
-                  <LogOutIcon className="w-3.5 h-3.5" />
-                </button>
+                {APP_THEMES.map((t) => {
+                  const isSelected = (user?.theme || 'discord') === t.id;
+                  return (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => {
+                        updateTheme(t.id as AppThemeId);
+                        setShowThemeMenu(false);
+                      }}
+                      className={`w-full px-3 py-2 rounded-lg text-xs flex items-center justify-between transition-colors ${
+                        isSelected
+                          ? 'bg-[#5865F2] text-white font-semibold'
+                          : 'text-gray-300 hover:bg-[#1E1F22]'
+                      }`}
+                    >
+                      <span className="flex items-center gap-2">
+                        <span
+                          className="w-3 h-3 rounded-full border border-white/30"
+                          style={{ backgroundColor: t.color }}
+                        />
+                        <span>{t.label}</span>
+                      </span>
+                      {isSelected && <span>✓</span>}
+                    </button>
+                  );
+                })}
               </div>
             )}
           </div>
-        </div>
 
-        {/* Rappel du répertoire sur écrans plus petits */}
-        {isAdmin && (
-          <div className="flex xl:hidden items-center gap-2 mt-3 text-xs text-gray-400">
-            <span>Répertoire des serveurs :</span>
-            <button
-              onClick={() => navigate('/settings')}
-              className="font-mono bg-[#2B2D31] hover:bg-[#1E1F22] text-gray-200 px-2.5 py-1 rounded-md border border-[#1E1F22] transition-colors flex items-center gap-1.5"
-            >
-              <FolderIcon className="w-3.5 h-3.5 text-[#8EA1E1]" />
-              <span>{settings.base_path || 'Chargement...'}</span>
-              <span className="text-[#5865F2] font-sans font-medium">Modifier</span>
-            </button>
-          </div>
-        )}
+          {/* Badge du compte connecté tout en haut à droite */}
+          {user && (
+            <div className="bg-[#2B2D31] border border-[#1E1F22] text-gray-200 text-xs px-3 py-1.5 rounded-lg flex items-center gap-2 whitespace-nowrap">
+              {isAdmin ? (
+                <CrownIcon className="w-3.5 h-3.5 text-amber-400" />
+              ) : (
+                <UserIcon className="w-3.5 h-3.5 text-[#8EA1E1]" />
+              )}
+              <span className="font-bold text-white">{user.username}</span>
+              <button
+                onClick={logout}
+                className="ml-1 pl-2 border-l border-[#1E1F22] text-gray-400 hover:text-[#DA373C] flex items-center gap-1 transition-colors"
+                title="Se déconnecter"
+              >
+                <LogOutIcon className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+        </div>
       </header>
 
       {/* ========================================================= */}

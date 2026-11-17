@@ -35,7 +35,7 @@ export default function Login() {
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-[#5865F2]/20 border border-[#5865F2]/40 text-[#8EA1E1] mb-3">
             {isSetupMode ? <CrownIcon className="w-7 h-7" /> : <LockIcon className="w-7 h-7" />}
           </div>
-          <h1 className="text-2xl font-extrabold text-white tracking-tight">OurCraft V2</h1>
+          <h1 className="text-2xl font-extrabold text-white tracking-tight">OurCraft</h1>
           <p className="text-sm text-gray-400 mt-1">
             {isSetupMode
               ? 'Première connexion : créez le compte Administrateur Central'
