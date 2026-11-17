@@ -5,7 +5,15 @@ import { useServerStore } from '../store/useServerStore';
 const API_BASE = `http://${window.location.hostname}:8000`;
 const WS_BASE = `ws://${window.location.hostname}:8000`;
 
-type TabType = 'console' | 'settings' | 'players' | 'files';
+type TabType =
+  | 'console'
+  | 'monitoring'
+  | 'addons'
+  | 'players'
+  | 'files'
+  | 'backups'
+  | 'schedules'
+  | 'settings';
 
 interface FileEntry {
   name: string;
@@ -23,6 +31,52 @@ interface PlayersData {
   players: string[];
   ops: string[];
   banned: string[];
+}
+
+interface ServerStats {
+  online: boolean;
+  cpu_percent: number;
+  ram_used_mb: number;
+  ram_limit_mb: number;
+  ram_percent: number;
+  net_rx_mb: number;
+  net_tx_mb: number;
+  pids: number;
+}
+
+interface InstalledAddon {
+  filename: string;
+  size: number;
+  modified: number;
+  enabled: boolean;
+}
+
+interface ModrinthResult {
+  project_id: string;
+  slug: string;
+  title: string;
+  description: string;
+  author: string;
+  downloads: number;
+  icon_url: string | null;
+  categories: string[];
+}
+
+interface BackupEntry {
+  name: string;
+  size: number;
+  created_at: number;
+}
+
+interface ScheduleEntry {
+  id: number;
+  name: string;
+  action_type: string;
+  schedule_type: string;
+  schedule_value: string;
+  payload: string;
+  enabled: boolean;
+  last_run: string;
 }
 
 const SERVER_TYPES = [
@@ -66,6 +120,54 @@ function formatBytes(bytes: number): string {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
+function formatDate(timestampSec: number): string {
+  return new Date(timestampSec * 1000).toLocaleString('fr-FR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function AreaSparkline({
+  data,
+  maxVal,
+  colorHex,
+}: {
+  data: number[];
+  maxVal: number;
+  colorHex: string;
+}) {
+  const width = 420;
+  const height = 110;
+  const padded = data.length < 2 ? [0, ...data] : data;
+  const safeMax = Math.max(maxVal, ...padded, 1);
+
+  const points = padded.map((v, idx) => {
+    const x = (idx / Math.max(1, padded.length - 1)) * width;
+    const y = height - Math.min(1, Math.max(0, v / safeMax)) * (height - 14) - 4;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+
+  const polylinePoints = points.join(' ');
+  const areaPoints = `0,${height} ${polylinePoints} ${width},${height}`;
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-28 overflow-visible">
+      <polygon points={areaPoints} fill={colorHex} fillOpacity="0.18" />
+      <polyline
+        fill="none"
+        stroke={colorHex}
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        points={polylinePoints}
+      />
+    </svg>
+  );
+}
+
 export default function ServerPanel() {
   const { serverName } = useParams();
   const navigate = useNavigate();
@@ -74,6 +176,48 @@ export default function ServerPanel() {
   const [activeTab, setActiveTab] = useState<TabType>('console');
   const [logs, setLogs] = useState<string[]>([]);
   const [command, setCommand] = useState('');
+
+  // --- ÉTATS MONITORING (BLOC 2.1) ---
+  const [stats, setStats] = useState<ServerStats>({
+    online: false,
+    cpu_percent: 0,
+    ram_used_mb: 0,
+    ram_limit_mb: 2048,
+    ram_percent: 0,
+    net_rx_mb: 0,
+    net_tx_mb: 0,
+    pids: 0,
+  });
+  const [cpuHistory, setCpuHistory] = useState<number[]>(Array(20).fill(0));
+  const [ramHistory, setRamHistory] = useState<number[]>(Array(20).fill(0));
+
+  // --- ÉTATS MODS & PLUGINS (BLOC 2.2) ---
+  const [addonLabel, setAddonLabel] = useState('Mods / Plugins');
+  const [addonFolder, setAddonFolder] = useState('mods');
+  const [installedAddons, setInstalledAddons] = useState<InstalledAddon[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [modrinthResults, setModrinthResults] = useState<ModrinthResult[]>([]);
+  const [isSearchingAddons, setIsSearchingAddons] = useState(false);
+  const [installingId, setInstallingId] = useState<string | null>(null);
+  const [addonFeedback, setAddonFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // --- ÉTATS SAUVEGARDES / SNAPSHOTS (BLOC 2.3) ---
+  const [backups, setBackups] = useState<BackupEntry[]>([]);
+  const [backupLabelInput, setBackupLabelInput] = useState('');
+  const [isLoadingBackups, setIsLoadingBackups] = useState(false);
+  const [isCreatingBackup, setIsCreatingBackup] = useState(false);
+  const [restoringBackupName, setRestoringBackupName] = useState<string | null>(null);
+  const [backupFeedback, setBackupFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // --- ÉTATS PLANIFICATEUR / CRON (BLOC 2.4) ---
+  const [schedules, setSchedules] = useState<ScheduleEntry[]>([]);
+  const [schedName, setSchedName] = useState('');
+  const [schedAction, setSchedAction] = useState('restart');
+  const [schedType, setSchedType] = useState('daily');
+  const [schedValue, setSchedValue] = useState('04:00');
+  const [schedPayload, setSchedPayload] = useState('Redémarrage automatique dans 5 secondes...');
+  const [isSavingSchedule, setIsSavingSchedule] = useState(false);
+  const [scheduleFeedback, setScheduleFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // --- ÉTATS ONGLET PARAMÈTRES ---
   const [portInput, setPortInput] = useState<number>(25565);
@@ -128,7 +272,6 @@ export default function ServerPanel() {
     if (servers.length === 0) fetchServers();
   }, [servers.length, fetchServers]);
 
-  // Synchronise les champs du formulaire Docker quand le serveur est chargé
   useEffect(() => {
     if (server) {
       setPortInput(server.port || 25565);
@@ -138,14 +281,99 @@ export default function ServerPanel() {
     }
   }, [server]);
 
-  // Auto-scroll de la console
   useEffect(() => {
     if (activeTab === 'console') {
       logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [logs, activeTab]);
 
-  // Fonction pour charger les joueurs connectés
+  // --- FETCHERS ---
+  const fetchStats = useCallback(async () => {
+    if (!serverName || !isRunning) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/servers/${serverName}/stats`);
+      if (res.ok) {
+        const data: ServerStats = await res.json();
+        setStats(data);
+        setCpuHistory((prev) => [...prev.slice(-29), data.cpu_percent]);
+        setRamHistory((prev) => [...prev.slice(-29), data.ram_used_mb]);
+      }
+    } catch {
+      // ignore
+    }
+  }, [serverName, isRunning]);
+
+  const fetchInstalledAddons = useCallback(async () => {
+    if (!serverName) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/servers/${serverName}/addons/installed`);
+      if (res.ok) {
+        const data = await res.json();
+        setInstalledAddons(data.items || []);
+        if (data.context) {
+          setAddonLabel(data.context.label);
+          setAddonFolder(data.context.folder);
+        }
+      }
+    } catch (err) {
+      console.error('Erreur addons installés:', err);
+    }
+  }, [serverName]);
+
+  const searchModrinth = useCallback(
+    async (queryStr: string) => {
+      if (!serverName) return;
+      setIsSearchingAddons(true);
+      try {
+        const res = await fetch(
+          `${API_BASE}/api/servers/${serverName}/addons/search?q=${encodeURIComponent(queryStr)}`
+        );
+        if (res.ok) {
+          const data = await res.json();
+          setModrinthResults(data.results || []);
+          if (data.context) {
+            setAddonLabel(data.context.label);
+            setAddonFolder(data.context.folder);
+          }
+        }
+      } catch (err) {
+        console.error('Erreur recherche Modrinth:', err);
+      } finally {
+        setIsSearchingAddons(false);
+      }
+    },
+    [serverName]
+  );
+
+  const fetchBackups = useCallback(async () => {
+    if (!serverName) return;
+    setIsLoadingBackups(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/servers/${serverName}/backups`);
+      if (res.ok) {
+        const data = await res.json();
+        setBackups(data.backups || []);
+      }
+    } catch (err) {
+      console.error('Erreur backups:', err);
+    } finally {
+      setIsLoadingBackups(false);
+    }
+  }, [serverName]);
+
+  const fetchSchedules = useCallback(async () => {
+    if (!serverName) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/servers/${serverName}/schedules`);
+      if (res.ok) {
+        const data = await res.json();
+        setSchedules(data || []);
+      }
+    } catch (err) {
+      console.error('Erreur schedules:', err);
+    }
+  }, [serverName]);
+
   const fetchPlayers = useCallback(async () => {
     if (!serverName) return;
     setIsLoadingPlayers(true);
@@ -162,7 +390,6 @@ export default function ServerPanel() {
     }
   }, [serverName]);
 
-  // Fonction pour charger server.properties
   const fetchServerProperties = useCallback(async () => {
     if (!serverName) return;
     setIsLoadingProps(true);
@@ -180,7 +407,6 @@ export default function ServerPanel() {
     }
   }, [serverName]);
 
-  // Fonction pour lister un dossier dans Web FTP
   const fetchDirectory = useCallback(
     async (dirPath: string) => {
       if (!serverName) return;
@@ -207,7 +433,18 @@ export default function ServerPanel() {
     [serverName]
   );
 
-  // Connexion WebSocket (reste active quel que soit l'onglet)
+  // Sondage régulier des stats CPU/RAM quand le serveur est en ligne
+  useEffect(() => {
+    if (!isRunning) {
+      setStats((prev) => ({ ...prev, online: false, cpu_percent: 0, ram_used_mb: 0, ram_percent: 0 }));
+      return;
+    }
+    fetchStats();
+    const interval = setInterval(fetchStats, 3000);
+    return () => clearInterval(interval);
+  }, [isRunning, fetchStats]);
+
+  // Connexion WebSocket
   useEffect(() => {
     if (!isRunning || !serverName) {
       if (wsRef.current) wsRef.current.close();
@@ -227,7 +464,6 @@ export default function ServerPanel() {
         return newLogs.slice(-250);
       });
 
-      // Si un joueur rejoint ou quitte dans les logs, on actualise la liste des joueurs en direct
       if (
         line.includes('joined the game') ||
         line.includes('left the game') ||
@@ -260,10 +496,29 @@ export default function ServerPanel() {
       return () => clearInterval(interval);
     } else if (activeTab === 'files') {
       fetchDirectory(currentDir);
+    } else if (activeTab === 'addons') {
+      fetchInstalledAddons();
+      if (modrinthResults.length === 0) {
+        searchModrinth('');
+      }
+    } else if (activeTab === 'backups') {
+      fetchBackups();
+    } else if (activeTab === 'schedules') {
+      fetchSchedules();
     }
-  }, [activeTab, fetchServerProperties, fetchPlayers, fetchDirectory, currentDir]);
+  }, [
+    activeTab,
+    fetchServerProperties,
+    fetchPlayers,
+    fetchDirectory,
+    currentDir,
+    fetchInstalledAddons,
+    searchModrinth,
+    modrinthResults.length,
+    fetchBackups,
+    fetchSchedules,
+  ]);
 
-  // Envoi d'une commande dans le WebSocket
   const sendWsCommand = (cmd: string) => {
     if (!cmd.trim()) return false;
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -288,6 +543,166 @@ export default function ServerPanel() {
       const success = await deleteServer(server.name);
       if (success) navigate('/');
     }
+  };
+
+  // --- ACTIONS MODS & PLUGINS ---
+  const handleInstallAddon = async (mod: ModrinthResult) => {
+    if (!serverName) return;
+    setInstallingId(mod.project_id);
+    setAddonFeedback(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/servers/${serverName}/addons/install`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_id: mod.project_id, title: mod.title }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setAddonFeedback({ type: 'success', text: data.message });
+        fetchInstalledAddons();
+      } else {
+        setAddonFeedback({ type: 'error', text: data.detail || "Erreur d'installation." });
+      }
+    } catch {
+      setAddonFeedback({ type: 'error', text: 'Erreur réseau lors du téléchargement.' });
+    } finally {
+      setInstallingId(null);
+    }
+  };
+
+  const handleToggleAddon = async (filename: string) => {
+    if (!serverName) return;
+    await fetch(`${API_BASE}/api/servers/${serverName}/addons/${encodeURIComponent(filename)}/toggle`, {
+      method: 'PUT',
+    });
+    fetchInstalledAddons();
+  };
+
+  const handleDeleteAddon = async (filename: string) => {
+    if (!serverName) return;
+    if (!window.confirm(`Supprimer définitivement "${filename}" ?`)) return;
+    await fetch(`${API_BASE}/api/servers/${serverName}/addons/${encodeURIComponent(filename)}`, {
+      method: 'DELETE',
+    });
+    fetchInstalledAddons();
+  };
+
+  // --- ACTIONS SAUVEGARDES (SNAPSHOTS) ---
+  const handleCreateBackup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!serverName) return;
+    setIsCreatingBackup(true);
+    setBackupFeedback(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/servers/${serverName}/backups`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: backupLabelInput.trim() || 'snapshot' }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setBackupFeedback({ type: 'success', text: data.message });
+        setBackupLabelInput('');
+        fetchBackups();
+      } else {
+        setBackupFeedback({ type: 'error', text: data.detail || 'Erreur lors de la création du snapshot.' });
+      }
+    } catch {
+      setBackupFeedback({ type: 'error', text: 'Erreur réseau.' });
+    } finally {
+      setIsCreatingBackup(false);
+    }
+  };
+
+  const handleRestoreBackup = async (backupName: string) => {
+    if (!serverName) return;
+    const confirm = window.confirm(
+      `Restaurer le snapshot "${backupName}" ?\n\nAttention : les fichiers actuels du serveur seront remplacés par ceux de cette archive.`
+    );
+    if (!confirm) return;
+
+    setRestoringBackupName(backupName);
+    setBackupFeedback(null);
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/servers/${serverName}/backups/${encodeURIComponent(backupName)}/restore`,
+        { method: 'POST' }
+      );
+      const data = await res.json();
+      if (res.ok) {
+        setBackupFeedback({ type: 'success', text: data.message });
+      } else {
+        setBackupFeedback({ type: 'error', text: data.detail || 'Erreur de restauration.' });
+      }
+    } catch {
+      setBackupFeedback({ type: 'error', text: 'Erreur réseau.' });
+    } finally {
+      setRestoringBackupName(null);
+    }
+  };
+
+  const handleDeleteBackup = async (backupName: string) => {
+    if (!serverName) return;
+    if (!window.confirm(`Supprimer l'archive "${backupName}" ?`)) return;
+    await fetch(`${API_BASE}/api/servers/${serverName}/backups/${encodeURIComponent(backupName)}`, {
+      method: 'DELETE',
+    });
+    fetchBackups();
+  };
+
+  // --- ACTIONS PLANIFICATEUR (CRON) ---
+  const handleCreateSchedule = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!serverName || !schedName.trim()) return;
+    setIsSavingSchedule(true);
+    setScheduleFeedback(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/servers/${serverName}/schedules`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: schedName,
+          action_type: schedAction,
+          schedule_type: schedType,
+          schedule_value: schedValue,
+          payload: schedPayload,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setScheduleFeedback({ type: 'success', text: data.message });
+        setSchedName('');
+        fetchSchedules();
+      } else {
+        setScheduleFeedback({ type: 'error', text: data.detail || 'Erreur création tâche.' });
+      }
+    } catch {
+      setScheduleFeedback({ type: 'error', text: 'Erreur réseau.' });
+    } finally {
+      setIsSavingSchedule(false);
+    }
+  };
+
+  const handleToggleSchedule = async (id: number) => {
+    if (!serverName) return;
+    await fetch(`${API_BASE}/api/servers/${serverName}/schedules/${id}/toggle`, { method: 'PUT' });
+    fetchSchedules();
+  };
+
+  const handleRunScheduleNow = async (id: number) => {
+    if (!serverName) return;
+    const res = await fetch(`${API_BASE}/api/servers/${serverName}/schedules/${id}/run`, { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+      setScheduleFeedback({ type: 'success', text: data.message });
+      fetchSchedules();
+    }
+  };
+
+  const handleDeleteSchedule = async (id: number) => {
+    if (!serverName) return;
+    await fetch(`${API_BASE}/api/servers/${serverName}/schedules/${id}`, { method: 'DELETE' });
+    fetchSchedules();
   };
 
   // --- ACTIONS ONGLET PARAMÈTRES ---
@@ -486,6 +901,8 @@ export default function ServerPanel() {
 
   if (!server) return <div className="text-white p-8">Chargement ou serveur introuvable...</div>;
 
+  const isModdedServer = ['FORGE', 'FABRIC', 'NEOFORGE'].includes((server.server_type || 'PAPER').toUpperCase());
+
   const tabs: {
     id: TabType;
     label: string;
@@ -504,17 +921,27 @@ export default function ServerPanel() {
       icon: '💻',
     },
     {
-      id: 'settings',
-      label: 'Paramètres',
-      subtitle: 'Docker & Propriétés',
-      fullTitle: 'Configuration du Serveur & Moteur Docker',
-      description: 'Ajustez le port, la mémoire RAM, la version du jeu et les règles de server.properties.',
-      icon: '⚙️',
+      id: 'monitoring',
+      label: 'Monitoring',
+      subtitle: 'CPU & RAM Live',
+      fullTitle: 'Monitoring des Ressources en Direct',
+      description: 'Jauges et courbes temps réel de consommation CPU, mémoire RAM et trafic réseau du conteneur.',
+      icon: '📊',
+      badge: isRunning ? `${stats.cpu_percent}%` : undefined,
+    },
+    {
+      id: 'addons',
+      label: isModdedServer ? 'Mods' : 'Plugins',
+      subtitle: 'Catalogue Modrinth',
+      fullTitle: `Gestionnaire de ${isModdedServer ? 'Mods' : 'Plugins'} & Téléchargeur Modrinth`,
+      description: `Recherchez et installez des ${isModdedServer ? 'mods' : 'plugins'} compatibles (${server.server_type} ${server.version}) en un clic.`,
+      icon: '🧩',
+      badge: installedAddons.length || undefined,
     },
     {
       id: 'players',
       label: 'Joueurs',
-      subtitle: 'En ligne & Modération',
+      subtitle: 'Modération Live',
       fullTitle: 'Joueurs Connectés & Modération en Direct',
       description: 'Visualisez les joueurs actifs sur le serveur et appliquez des actions rapides (OP, Kick, Ban).',
       icon: '👥',
@@ -523,10 +950,36 @@ export default function ServerPanel() {
     {
       id: 'files',
       label: 'Fichiers',
-      subtitle: 'Explorateur Web FTP',
+      subtitle: 'Web FTP & Code',
       fullTitle: 'Explorateur de Fichiers & Éditeur de Configuration',
       description: 'Parcourez l’arborescence du serveur (/data) et modifiez vos fichiers .yml, .json ou .properties.',
       icon: '📁',
+    },
+    {
+      id: 'backups',
+      label: 'Sauvegardes',
+      subtitle: 'Snapshots .zip',
+      fullTitle: 'Gestionnaire de Sauvegardes (Snapshots)',
+      description: 'Compressez l’intégralité du serveur en un clic et restaurez une archive en cas de problème.',
+      icon: '💾',
+      badge: backups.length || undefined,
+    },
+    {
+      id: 'schedules',
+      label: 'Planificateur',
+      subtitle: 'Tâches Cron',
+      fullTitle: 'Planificateur de Tâches Automatisées (Cron)',
+      description: 'Programmez des redémarrages automatiques, des sauvegardes ou des annonces régulières.',
+      icon: '⏰',
+      badge: schedules.filter((s) => s.enabled).length || undefined,
+    },
+    {
+      id: 'settings',
+      label: 'Paramètres',
+      subtitle: 'Docker & Règles',
+      fullTitle: 'Configuration du Serveur & Moteur Docker',
+      description: 'Ajustez le port, la mémoire RAM, la version du jeu et les règles de server.properties.',
+      icon: '⚙️',
     },
   ];
 
@@ -535,19 +988,19 @@ export default function ServerPanel() {
   const breadcrumbs = currentDir ? currentDir.split('/').filter(Boolean) : [];
 
   return (
-    <div className="p-6 md:p-8 max-w-6xl mx-auto h-screen flex flex-col">
+    <div className="p-4 md:p-6 max-w-7xl mx-auto h-screen flex flex-col">
       {/* HEADER DU SERVEUR */}
-      <header className="mb-4 flex flex-col md:flex-row md:items-center justify-between bg-[#2B2D31] p-5 rounded-xl border border-[#1E1F22] shrink-0">
-        <div className="flex items-center space-x-4 mb-4 md:mb-0">
+      <header className="mb-3 flex flex-col lg:flex-row lg:items-center justify-between bg-[#2B2D31] p-4 rounded-xl border border-[#1E1F22] shrink-0 gap-4">
+        <div className="flex items-center space-x-4">
           <button
             onClick={() => navigate('/')}
-            className="text-gray-400 hover:text-white bg-[#1E1F22] px-3 py-1.5 rounded-lg transition-colors text-sm"
+            className="text-gray-400 hover:text-white bg-[#1E1F22] px-3 py-1.5 rounded-lg transition-colors text-sm shrink-0"
           >
-            ← Retour
+            ← Accueil
           </button>
           <div>
-            <div className="flex items-center space-x-3">
-              <h1 className="text-2xl font-bold text-white">{server.name}</h1>
+            <div className="flex flex-wrap items-center gap-2.5">
+              <h1 className="text-xl md:text-2xl font-bold text-white">{server.name}</h1>
               <span
                 className={`px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider flex items-center space-x-1.5 ${
                   isRunning ? 'bg-[#23A559]/20 text-[#23A559]' : 'bg-[#DA373C]/20 text-[#DA373C]'
@@ -558,99 +1011,95 @@ export default function ServerPanel() {
               </span>
             </div>
             <div className="flex flex-wrap items-center gap-2 mt-1.5 text-xs text-gray-400">
-              <span className="bg-[#1E1F22] px-2.5 py-1 rounded border border-[#111214] font-mono">
+              <span className="bg-[#1E1F22] px-2.5 py-0.5 rounded border border-[#111214] font-mono">
                 Port: <strong className="text-gray-200">{server.port}</strong>
               </span>
-              <span className="bg-[#1E1F22] px-2.5 py-1 rounded border border-[#111214] font-mono">
-                Moteur: <strong className="text-[#5865F2]">{server.server_type || 'PAPER'}</strong> ({server.version || 'LATEST'})
+              <span className="bg-[#1E1F22] px-2.5 py-0.5 rounded border border-[#111214] font-mono">
+                Moteur: <strong className="text-[#8EA1E1]">{server.server_type || 'PAPER'}</strong> ({server.version || 'LATEST'})
               </span>
-              <span className="bg-[#1E1F22] px-2.5 py-1 rounded border border-[#111214] font-mono">
+              <span className="bg-[#1E1F22] px-2.5 py-0.5 rounded border border-[#111214] font-mono">
                 RAM: <strong className="text-gray-200">{server.ram || '2G'}</strong>
               </span>
-              <span className="hidden lg:inline text-gray-500 truncate max-w-xs" title={server.path}>
-                {server.path}
-              </span>
+              {isRunning && (
+                <span className="bg-[#1E1F22] px-2.5 py-0.5 rounded border border-[#111214] font-mono text-[#23A559]">
+                  CPU: {stats.cpu_percent}% | RAM: {stats.ram_used_mb} Mo ({stats.ram_percent}%)
+                </span>
+              )}
             </div>
           </div>
         </div>
 
         {/* BOUTONS D'ACTION (Démarrer, Arrêter, Supprimer) */}
-        <div className="flex items-center space-x-3">
+        <div className="flex items-center space-x-2.5 self-end lg:self-auto">
           <button
             onClick={() => startServer(server)}
             disabled={isRunning}
-            className="bg-[#23A559] hover:bg-[#1D8B4A] disabled:opacity-40 disabled:cursor-not-allowed text-white px-5 py-2 rounded-md font-medium transition-colors shadow text-sm"
+            className="bg-[#23A559] hover:bg-[#1D8B4A] disabled:opacity-40 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-semibold transition-colors shadow text-sm"
           >
             ▶ Démarrer
           </button>
           <button
             onClick={() => stopServer(server.name)}
             disabled={!isRunning}
-            className="bg-[#DA373C] hover:bg-[#C92B30] disabled:opacity-40 disabled:cursor-not-allowed text-white px-5 py-2 rounded-md font-medium transition-colors shadow text-sm"
+            className="bg-[#DA373C] hover:bg-[#C92B30] disabled:opacity-40 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-semibold transition-colors shadow text-sm"
           >
             ■ Arrêter
           </button>
 
-          <div className="w-px h-8 bg-[#1E1F22] mx-1"></div>
+          <div className="w-px h-7 bg-[#1E1F22] mx-1"></div>
 
           <button
             onClick={handleDelete}
-            className="text-gray-400 hover:text-[#DA373C] hover:bg-[#DA373C]/10 px-3.5 py-2 rounded-md font-medium transition-colors text-sm border border-transparent hover:border-[#DA373C]/50"
+            className="text-gray-400 hover:text-[#DA373C] hover:bg-[#DA373C]/10 px-3 py-2 rounded-lg font-medium transition-colors text-xs border border-transparent hover:border-[#DA373C]/50"
           >
             Supprimer
           </button>
         </div>
       </header>
 
-      {/* BARRE D'ONGLETS REDESIGNÉE */}
-      <nav className="grid grid-cols-2 md:grid-cols-4 gap-2.5 mb-4 shrink-0">
+      {/* BARRE D'ONGLETS (8 ONGLETS PRO) */}
+      <nav className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 mb-3 shrink-0">
         {tabs.map((tab) => {
           const isActive = activeTab === tab.id;
           return (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center justify-between p-3.5 rounded-xl border text-left transition-all ${
+              className={`flex flex-col justify-between p-2.5 rounded-xl border text-left transition-all ${
                 isActive
                   ? 'bg-[#5865F2] border-[#5865F2] text-white shadow-lg'
                   : 'bg-[#2B2D31] border-[#1E1F22] text-gray-300 hover:bg-[#35373C] hover:text-white'
               }`}
             >
-              <div className="flex items-center space-x-3 min-w-0">
-                <span
-                  className={`w-10 h-10 rounded-lg flex items-center justify-center text-lg shrink-0 ${
-                    isActive ? 'bg-white/20' : 'bg-[#1E1F22]'
-                  }`}
-                >
-                  {tab.icon}
-                </span>
-                <div className="min-w-0">
-                  <div className="font-bold text-sm truncate">{tab.label}</div>
-                  <div className={`text-xs truncate ${isActive ? 'text-indigo-100' : 'text-gray-400'}`}>
-                    {tab.subtitle}
-                  </div>
+              <div className="flex items-center justify-between w-full mb-1">
+                <span className="text-base">{tab.icon}</span>
+                {tab.badge !== undefined && (
+                  <span
+                    className={`px-1.5 py-0.5 text-[10px] rounded-full font-mono font-bold ${
+                      isActive ? 'bg-white/25 text-white' : 'bg-[#1E1F22] text-[#8EA1E1]'
+                    }`}
+                  >
+                    {tab.badge}
+                  </span>
+                )}
+              </div>
+              <div>
+                <div className="font-bold text-xs truncate">{tab.label}</div>
+                <div className={`text-[10px] truncate ${isActive ? 'text-indigo-100' : 'text-gray-400'}`}>
+                  {tab.subtitle}
                 </div>
               </div>
-              {tab.badge !== undefined && (
-                <span
-                  className={`ml-2 px-2 py-0.5 text-xs rounded-full font-mono font-bold shrink-0 ${
-                    isActive ? 'bg-white/25 text-white' : 'bg-[#1E1F22] text-[#23A559]'
-                  }`}
-                >
-                  {tab.badge}
-                </span>
-              )}
             </button>
           );
         })}
       </nav>
 
       {/* BANNIÈRE DE TITRE DE L'ONGLET ACTIF */}
-      <div className="mb-4 px-5 py-3.5 bg-[#1E1F22] rounded-xl border border-[#2B2D31] flex flex-col sm:flex-row sm:items-center justify-between gap-2 shrink-0">
+      <div className="mb-3 px-4 py-2.5 bg-[#1E1F22] rounded-xl border border-[#2B2D31] flex flex-col sm:flex-row sm:items-center justify-between gap-2 shrink-0">
         <div className="flex items-center space-x-3">
           <span className="text-xl">{currentTabInfo.icon}</span>
           <div>
-            <h2 className="text-base font-bold text-white tracking-wide">{currentTabInfo.fullTitle}</h2>
+            <h2 className="text-sm md:text-base font-bold text-white tracking-wide">{currentTabInfo.fullTitle}</h2>
             <p className="text-xs text-gray-400">{currentTabInfo.description}</p>
           </div>
         </div>
@@ -721,11 +1170,1004 @@ export default function ServerPanel() {
         )}
 
         {/* ========================================== */}
-        {/* ONGLET 2 : PARAMÈTRES                      */}
+        {/* ONGLET 2 : MONITORING (JAUGES & GRAPHS)    */}
+        {/* ========================================== */}
+        {activeTab === 'monitoring' && (
+          <div className="flex-grow overflow-y-auto space-y-5 pr-1">
+            {!isRunning ? (
+              <div className="bg-[#2B2D31] rounded-xl border border-[#1E1F22] p-10 text-center text-gray-400">
+                <p className="text-lg font-bold text-white mb-1">Serveur hors ligne</p>
+                <p className="text-sm">Démarrez le serveur pour visualiser les jauges CPU, RAM et Réseau en direct.</p>
+              </div>
+            ) : (
+              <>
+                {/* 4 Cartes KPIs Temps Réel */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {/* Jauge CPU */}
+                  <div className="bg-[#2B2D31] p-5 rounded-xl border border-[#1E1F22] text-white">
+                    <div className="flex justify-between items-center text-xs text-gray-400 uppercase font-bold mb-2">
+                      <span>Charge CPU</span>
+                      <span className="text-[#5865F2] font-mono text-sm">{stats.cpu_percent}%</span>
+                    </div>
+                    <div className="text-2xl font-extrabold font-mono mb-3">{stats.cpu_percent}%</div>
+                    <div className="w-full h-2.5 bg-[#111214] rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-[#5865F2] transition-all duration-500"
+                        style={{ width: `${Math.min(100, stats.cpu_percent)}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Jauge RAM */}
+                  <div className="bg-[#2B2D31] p-5 rounded-xl border border-[#1E1F22] text-white">
+                    <div className="flex justify-between items-center text-xs text-gray-400 uppercase font-bold mb-2">
+                      <span>Mémoire RAM</span>
+                      <span className="text-[#23A559] font-mono text-sm">{stats.ram_percent}%</span>
+                    </div>
+                    <div className="text-2xl font-extrabold font-mono mb-3">
+                      {stats.ram_used_mb} <span className="text-sm font-normal text-gray-400">/ {stats.ram_limit_mb} Mo</span>
+                    </div>
+                    <div className="w-full h-2.5 bg-[#111214] rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-[#23A559] transition-all duration-500"
+                        style={{ width: `${Math.min(100, stats.ram_percent)}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Trafic Réseau */}
+                  <div className="bg-[#2B2D31] p-5 rounded-xl border border-[#1E1F22] text-white">
+                    <div className="text-xs text-gray-400 uppercase font-bold mb-2">Trafic Réseau Conteneur</div>
+                    <div className="flex items-baseline justify-between mt-3">
+                      <div>
+                        <span className="text-xs text-gray-400 block">↓ Reçu (RX)</span>
+                        <span className="text-lg font-bold font-mono text-blue-400">{stats.net_rx_mb} Mo</span>
+                      </div>
+                      <div>
+                        <span className="text-xs text-gray-400 block">↑ Envoyé (TX)</span>
+                        <span className="text-lg font-bold font-mono text-purple-400">{stats.net_tx_mb} Mo</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Processus / Threads */}
+                  <div className="bg-[#2B2D31] p-5 rounded-xl border border-[#1E1F22] text-white">
+                    <div className="text-xs text-gray-400 uppercase font-bold mb-2">Threads JVM Actifs</div>
+                    <div className="text-2xl font-extrabold font-mono mt-2">{stats.pids}</div>
+                    <p className="text-xs text-gray-400 mt-2">Actualisation toutes les 3 secondes</p>
+                  </div>
+                </div>
+
+                {/* Courbes Temps Réel CPU & RAM */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                  <div className="bg-[#2B2D31] p-5 rounded-xl border border-[#1E1F22] text-white">
+                    <div className="flex items-center justify-between mb-4">
+                      <div>
+                        <h3 className="font-bold text-base">Historique CPU (%)</h3>
+                        <p className="text-xs text-gray-400">Évolution sur les 30 derniers relevés</p>
+                      </div>
+                      <span className="font-mono text-sm font-bold text-[#5865F2] bg-[#1E1F22] px-3 py-1 rounded-lg">
+                        Actuel : {stats.cpu_percent}%
+                      </span>
+                    </div>
+                    <div className="bg-[#111214] p-4 rounded-xl border border-[#1E1F22]">
+                      <AreaSparkline data={cpuHistory} maxVal={100} colorHex="#5865F2" />
+                    </div>
+                  </div>
+
+                  <div className="bg-[#2B2D31] p-5 rounded-xl border border-[#1E1F22] text-white">
+                    <div className="flex items-center justify-between mb-4">
+                      <div>
+                        <h3 className="font-bold text-base">Historique Mémoire RAM (Mo)</h3>
+                        <p className="text-xs text-gray-400">Plafond alloué : {stats.ram_limit_mb} Mo</p>
+                      </div>
+                      <span className="font-mono text-sm font-bold text-[#23A559] bg-[#1E1F22] px-3 py-1 rounded-lg">
+                        Actuel : {stats.ram_used_mb} Mo
+                      </span>
+                    </div>
+                    <div className="bg-[#111214] p-4 rounded-xl border border-[#1E1F22]">
+                      <AreaSparkline data={ramHistory} maxVal={stats.ram_limit_mb} colorHex="#23A559" />
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ========================================== */}
+        {/* ONGLET 3 : MODS & PLUGINS (MODRINTH)       */}
+        {/* ========================================== */}
+        {activeTab === 'addons' && (
+          <div className="flex-grow grid grid-cols-1 lg:grid-cols-12 gap-5 overflow-hidden min-h-0">
+            {/* COLONNE GAUCHE : Catalogue Modrinth & Téléchargeur */}
+            <div className="lg:col-span-7 bg-[#2B2D31] rounded-xl border border-[#1E1F22] flex flex-col overflow-hidden shadow-lg text-white">
+              <div className="p-4 bg-[#1E1F22] border-b border-[#2B2D31] shrink-0">
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    searchModrinth(searchQuery);
+                  }}
+                  className="flex gap-2"
+                >
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder={`Rechercher un ${addonLabel.toLowerCase()} sur Modrinth (ex: JEI, WorldEdit, Lithium, EssentialsX)...`}
+                    className="flex-grow bg-[#111214] text-white border border-[#2B2D31] rounded-lg px-3.5 py-2 text-sm focus:outline-none focus:border-[#5865F2]"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isSearchingAddons}
+                    className="bg-[#5865F2] hover:bg-[#4752C4] text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors shrink-0"
+                  >
+                    {isSearchingAddons ? 'Recherche...' : '🔍 Chercher'}
+                  </button>
+                </form>
+
+                {addonFeedback && (
+                  <div
+                    className={`mt-3 p-2.5 rounded-lg text-xs border ${
+                      addonFeedback.type === 'success'
+                        ? 'bg-[#23A559]/15 border-[#23A559]/50 text-[#23A559]'
+                        : 'bg-[#DA373C]/15 border-[#DA373C]/50 text-[#DA373C]'
+                    }`}
+                  >
+                    {addonFeedback.text}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex-grow overflow-y-auto p-4 space-y-3">
+                {isSearchingAddons ? (
+                  <div className="text-center text-gray-400 py-10 text-sm">Interrogation du catalogue Modrinth...</div>
+                ) : modrinthResults.length === 0 ? (
+                  <div className="text-center text-gray-400 py-10 text-sm">Aucun résultat trouvé.</div>
+                ) : (
+                  modrinthResults.map((mod) => {
+                    const isInstalling = installingId === mod.project_id;
+                    return (
+                      <div
+                        key={mod.project_id}
+                        className="bg-[#1E1F22] border border-[#111214] rounded-xl p-3.5 flex items-center justify-between gap-4 hover:border-[#5865F2]/50 transition-colors"
+                      >
+                        <div className="flex items-center space-x-3.5 min-w-0">
+                          {mod.icon_url ? (
+                            <img src={mod.icon_url} alt={mod.title} className="w-11 h-11 rounded-lg bg-[#111214] shrink-0" />
+                          ) : (
+                            <div className="w-11 h-11 rounded-lg bg-[#111214] flex items-center justify-center text-lg shrink-0">
+                              🧩
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-sm text-white truncate">{mod.title}</span>
+                              <span className="text-[11px] text-gray-400">par {mod.author}</span>
+                            </div>
+                            <p className="text-xs text-gray-400 line-clamp-2 mt-0.5">{mod.description}</p>
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => handleInstallAddon(mod)}
+                          disabled={isInstalling}
+                          className="bg-[#23A559] hover:bg-[#1D8B4A] disabled:opacity-50 text-white px-3.5 py-2 rounded-lg text-xs font-semibold transition-colors shrink-0 shadow"
+                        >
+                          {isInstalling ? 'Installation...' : '⬇ Installer'}
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {/* COLONNE DROITE : Fichiers .jar installés */}
+            <div className="lg:col-span-5 bg-[#2B2D31] rounded-xl border border-[#1E1F22] flex flex-col overflow-hidden shadow-lg text-white">
+              <div className="p-4 bg-[#1E1F22] border-b border-[#2B2D31] flex items-center justify-between shrink-0">
+                <div>
+                  <h3 className="font-bold text-sm">
+                    Installés dans <code className="text-[#8EA1E1]">/{addonFolder}</code>
+                  </h3>
+                  <p className="text-xs text-gray-400">Redémarrez le serveur après l'ajout d'un fichier .jar</p>
+                </div>
+                <span className="bg-[#2B2D31] px-2.5 py-1 rounded-full text-xs font-mono">
+                  {installedAddons.length} fichier(s)
+                </span>
+              </div>
+
+              <div className="flex-grow overflow-y-auto p-4 space-y-2.5">
+                {installedAddons.length === 0 ? (
+                  <div className="text-center text-gray-400 py-10 text-sm">
+                    Aucun fichier <code className="text-gray-300">.jar</code> dans <code className="text-gray-300">/{addonFolder}</code>.
+                  </div>
+                ) : (
+                  installedAddons.map((item) => (
+                    <div
+                      key={item.filename}
+                      className="bg-[#1E1F22] border border-[#111214] rounded-xl p-3 flex items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0">
+                        <div className={`font-mono text-xs font-semibold truncate ${item.enabled ? 'text-white' : 'text-gray-500 line-through'}`}>
+                          {item.filename}
+                        </div>
+                        <div className="text-[11px] text-gray-400 mt-0.5">{formatBytes(item.size)}</div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          onClick={() => handleToggleAddon(item.filename)}
+                          className={`px-2.5 py-1 rounded text-xs font-medium ${
+                            item.enabled
+                              ? 'bg-[#23A559]/20 text-[#23A559]'
+                              : 'bg-gray-600/30 text-gray-400'
+                          }`}
+                        >
+                          {item.enabled ? 'Actif' : 'Désactivé'}
+                        </button>
+                        <button
+                          onClick={() => handleDeleteAddon(item.filename)}
+                          className="text-gray-400 hover:text-[#DA373C] px-2 py-1 text-xs"
+                          title="Supprimer"
+                        >
+                          🗑️
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================== */}
+        {/* ONGLET 4 : JOUEURS                         */}
+        {/* ========================================== */}
+        {activeTab === 'players' && (
+          <div className="flex-grow overflow-y-auto space-y-6 pr-1">
+            {actionToast && (
+              <div className="bg-[#5865F2]/20 border border-[#5865F2] text-white px-4 py-3 rounded-xl text-sm flex items-center justify-between shadow">
+                <span>{actionToast}</span>
+                <button onClick={() => setActionToast(null)} className="text-gray-300 hover:text-white">
+                  ✕
+                </button>
+              </div>
+            )}
+
+            <div className="bg-[#2B2D31] rounded-xl border border-[#1E1F22] p-6 text-white shadow-lg">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-[#1E1F22]">
+                <div>
+                  <h2 className="text-xl font-bold flex items-center gap-3">
+                    <span>Joueurs en ligne</span>
+                    <span className="bg-[#1E1F22] border border-[#111214] px-3 py-0.5 rounded-full text-sm font-mono text-[#5865F2]">
+                      {playersData.count} / {playersData.max}
+                    </span>
+                  </h2>
+                  <p className="text-gray-400 text-sm mt-1">
+                    Liste actualisée en temps réel. Les boutons d'action envoient directement les commandes dans le WebSocket.
+                  </p>
+                </div>
+
+                <button
+                  onClick={fetchPlayers}
+                  disabled={isLoadingPlayers}
+                  className="bg-[#1E1F22] hover:bg-[#111214] border border-[#111214] text-gray-200 px-4 py-2 rounded-lg text-sm font-medium transition-colors self-start sm:self-auto"
+                >
+                  {isLoadingPlayers ? 'Actualisation...' : '↻ Actualiser'}
+                </button>
+              </div>
+
+              {!isRunning ? (
+                <div className="bg-[#1E1F22] border border-[#111214] rounded-xl p-8 text-center text-gray-400">
+                  <p className="text-lg font-medium text-white mb-1">Le serveur est actuellement arrêté</p>
+                  <p className="text-sm">Démarrez le serveur pour voir les joueurs connectés en direct et utiliser les actions rapides.</p>
+                </div>
+              ) : playersData.players.length === 0 ? (
+                <div className="bg-[#1E1F22] border border-[#111214] rounded-xl p-8 text-center text-gray-400">
+                  <p className="text-lg font-medium text-white mb-1">Aucun joueur connecté pour le moment</p>
+                  <p className="text-sm">Dès qu'un joueur rejoint la partie, il apparaîtra automatiquement ici.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {playersData.players.map((player) => {
+                    const isOp = playersData.ops.some((op) => op.toLowerCase() === player.toLowerCase());
+                    return (
+                      <div
+                        key={player}
+                        className="bg-[#1E1F22] border border-[#111214] rounded-xl p-4 flex items-center justify-between gap-4"
+                      >
+                        <div className="flex items-center space-x-3.5 min-w-0">
+                          <img
+                            src={`https://mc-heads.net/avatar/${encodeURIComponent(player)}/40`}
+                            alt={player}
+                            className="w-10 h-10 rounded-lg bg-[#111214] shrink-0"
+                          />
+                          <div className="min-w-0">
+                            <div className="flex items-center space-x-2">
+                              <span className="font-bold text-white truncate">{player}</span>
+                              {isOp && (
+                                <span className="bg-amber-500/20 text-amber-400 border border-amber-500/40 text-[11px] font-bold px-2 py-0.5 rounded uppercase">
+                                  OP
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-xs text-[#23A559] flex items-center gap-1 mt-0.5">
+                              <span className="w-1.5 h-1.5 rounded-full bg-[#23A559]"></span> Connecté
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center space-x-2 shrink-0">
+                          {isOp ? (
+                            <button
+                              onClick={() => triggerPlayerAction('deop', player)}
+                              className="bg-amber-600/20 hover:bg-amber-600/40 text-amber-300 border border-amber-500/30 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors"
+                            >
+                              De-OP
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => triggerPlayerAction('op', player)}
+                              className="bg-[#5865F2]/20 hover:bg-[#5865F2] text-[#8EA1E1] hover:text-white border border-[#5865F2]/40 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors"
+                            >
+                              OP
+                            </button>
+                          )}
+                          <button
+                            onClick={() => triggerPlayerAction('kick', player)}
+                            className="bg-orange-500/20 hover:bg-orange-500 text-orange-300 hover:text-white border border-orange-500/40 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors"
+                          >
+                            Kick
+                          </button>
+                          <button
+                            onClick={() => triggerPlayerAction('ban', player)}
+                            className="bg-[#DA373C]/20 hover:bg-[#DA373C] text-red-300 hover:text-white border border-[#DA373C]/40 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors"
+                          >
+                            Ban
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              <div className="mt-6 pt-5 border-t border-[#1E1F22] flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                <div className="text-xs text-gray-400">
+                  Action rapide par pseudo (OP, Kick ou Ban via WebSocket) :
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="text"
+                    value={manualPlayerInput}
+                    onChange={(e) => setManualPlayerInput(e.target.value)}
+                    placeholder="Pseudo du joueur..."
+                    className="bg-[#1E1F22] text-white border border-[#111214] rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-[#5865F2]"
+                  />
+                  <button
+                    type="button"
+                    disabled={!manualPlayerInput.trim() || !isRunning}
+                    onClick={() => {
+                      triggerPlayerAction('op', manualPlayerInput.trim());
+                      setManualPlayerInput('');
+                    }}
+                    className="bg-[#5865F2] hover:bg-[#4752C4] disabled:opacity-40 text-white px-3 py-1.5 rounded-lg text-xs font-semibold"
+                  >
+                    OP
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!manualPlayerInput.trim() || !isRunning}
+                    onClick={() => {
+                      triggerPlayerAction('kick', manualPlayerInput.trim());
+                      setManualPlayerInput('');
+                    }}
+                    className="bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg text-xs font-semibold"
+                  >
+                    Kick
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!manualPlayerInput.trim() || !isRunning}
+                    onClick={() => {
+                      triggerPlayerAction('ban', manualPlayerInput.trim());
+                      setManualPlayerInput('');
+                    }}
+                    className="bg-[#DA373C] hover:bg-[#C92B30] disabled:opacity-40 text-white px-3 py-1.5 rounded-lg text-xs font-semibold"
+                  >
+                    Ban
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="bg-[#2B2D31] rounded-xl border border-[#1E1F22] p-5 text-white shadow-lg">
+                <h3 className="text-base font-bold mb-3 flex items-center justify-between">
+                  <span>👑 Opérateurs (ops.json)</span>
+                  <span className="text-xs bg-[#1E1F22] px-2.5 py-0.5 rounded-full text-gray-400">
+                    {playersData.ops.length}
+                  </span>
+                </h3>
+                {playersData.ops.length === 0 ? (
+                  <p className="text-sm text-gray-400">Aucun opérateur enregistré.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {playersData.ops.map((op) => (
+                      <div
+                        key={op}
+                        className="bg-[#1E1F22] px-3.5 py-2 rounded-lg flex items-center justify-between text-sm"
+                      >
+                        <span className="font-medium text-amber-300">{op}</span>
+                        <button
+                          onClick={() => triggerPlayerAction('deop', op)}
+                          disabled={!isRunning}
+                          className="text-xs text-gray-400 hover:text-[#DA373C] disabled:opacity-40"
+                        >
+                          Retirer OP
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-[#2B2D31] rounded-xl border border-[#1E1F22] p-5 text-white shadow-lg">
+                <h3 className="text-base font-bold mb-3 flex items-center justify-between">
+                  <span>🚫 Joueurs bannis (banned-players.json)</span>
+                  <span className="text-xs bg-[#1E1F22] px-2.5 py-0.5 rounded-full text-gray-400">
+                    {playersData.banned.length}
+                  </span>
+                </h3>
+                {playersData.banned.length === 0 ? (
+                  <p className="text-sm text-gray-400">Aucun joueur banni.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {playersData.banned.map((bannedName) => (
+                      <div
+                        key={bannedName}
+                        className="bg-[#1E1F22] px-3.5 py-2 rounded-lg flex items-center justify-between text-sm"
+                      >
+                        <span className="font-medium text-red-300">{bannedName}</span>
+                        <button
+                          onClick={() => triggerPlayerAction('pardon', bannedName)}
+                          disabled={!isRunning}
+                          className="text-xs text-[#23A559] hover:underline disabled:opacity-40"
+                        >
+                          Débannir (Pardon)
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================== */}
+        {/* ONGLET 5 : FICHIERS (WEB FTP)              */}
+        {/* ========================================== */}
+        {activeTab === 'files' && (
+          <div className="flex-grow grid grid-cols-1 lg:grid-cols-12 gap-4 overflow-hidden min-h-0">
+            <div className="lg:col-span-5 bg-[#2B2D31] rounded-xl border border-[#1E1F22] flex flex-col overflow-hidden shadow-lg">
+              <div className="p-3.5 bg-[#1E1F22] border-b border-[#2B2D31] flex flex-col gap-2 shrink-0">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center flex-wrap gap-1 text-xs font-mono text-gray-300">
+                    <button
+                      onClick={() => fetchDirectory('')}
+                      className="hover:text-[#5865F2] font-bold px-1.5 py-0.5 rounded bg-[#2B2D31]"
+                    >
+                      /data
+                    </button>
+                    {breadcrumbs.map((segment, idx) => {
+                      const subPath = breadcrumbs.slice(0, idx + 1).join('/');
+                      return (
+                        <span key={subPath} className="flex items-center gap-1">
+                          <span className="text-gray-500">/</span>
+                          <button
+                            onClick={() => fetchDirectory(subPath)}
+                            className="hover:text-[#5865F2] px-1 py-0.5 rounded hover:bg-[#2B2D31]"
+                          >
+                            {segment}
+                          </button>
+                        </span>
+                      );
+                    })}
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => setShowNewFileInput((v) => !v)}
+                      className="bg-[#5865F2] hover:bg-[#4752C4] text-white px-2.5 py-1 rounded text-xs font-medium transition-colors"
+                    >
+                      + Fichier
+                    </button>
+                    <button
+                      onClick={() => fetchDirectory(currentDir)}
+                      className="bg-[#2B2D31] hover:bg-[#111214] text-gray-300 px-2.5 py-1 rounded text-xs transition-colors"
+                    >
+                      ↻
+                    </button>
+                  </div>
+                </div>
+
+                {showNewFileInput && (
+                  <form onSubmit={handleCreateNewFile} className="flex gap-2 pt-1">
+                    <input
+                      type="text"
+                      value={newFileName}
+                      onChange={(e) => setNewFileName(e.target.value)}
+                      placeholder="ex: config.yml"
+                      className="flex-grow bg-[#111214] text-white border border-[#2B2D31] rounded px-2.5 py-1 text-xs font-mono focus:outline-none focus:border-[#5865F2]"
+                      autoFocus
+                    />
+                    <button
+                      type="submit"
+                      className="bg-[#23A559] text-white px-3 py-1 rounded text-xs font-medium"
+                    >
+                      Créer
+                    </button>
+                  </form>
+                )}
+              </div>
+
+              <div className="flex-grow overflow-y-auto divide-y divide-[#1E1F22]/60">
+                {currentDir && (
+                  <button
+                    onClick={navigateUpDirectory}
+                    className="w-full px-4 py-2.5 text-left text-sm text-gray-300 hover:bg-[#1E1F22] flex items-center space-x-3 transition-colors"
+                  >
+                    <span>↩️</span>
+                    <span className="font-mono">.. (Dossier parent)</span>
+                  </button>
+                )}
+
+                {isLoadingFiles ? (
+                  <div className="p-8 text-center text-gray-400 text-sm">Chargement de l'arborescence...</div>
+                ) : fileItems.length === 0 ? (
+                  <div className="p-8 text-center text-gray-400 text-sm">
+                    Ce dossier est vide. (Lancez le serveur une première fois pour générer les fichiers Minecraft).
+                  </div>
+                ) : (
+                  fileItems.map((item) => {
+                    const isSelected = selectedFilePath === item.path;
+                    let icon = '📄';
+                    if (item.is_dir) icon = '📁';
+                    else if (
+                      item.name.endsWith('.yml') ||
+                      item.name.endsWith('.yaml') ||
+                      item.name.endsWith('.json') ||
+                      item.name.endsWith('.properties')
+                    )
+                      icon = '⚙️';
+                    else if (item.name.endsWith('.jar') || item.name.endsWith('.gz')) icon = '📦';
+                    else if (item.name.endsWith('.log') || item.name.endsWith('.txt')) icon = '📝';
+
+                    return (
+                      <div
+                        key={item.path}
+                        onClick={() => {
+                          if (item.is_dir) {
+                            fetchDirectory(item.path);
+                          } else if (item.editable) {
+                            openFileInEditor(item.path, item.name);
+                          } else {
+                            setFileFeedback({
+                              type: 'error',
+                              text: `Le fichier "${item.name}" est un fichier binaire et ne peut pas être édité en mode texte.`,
+                            });
+                          }
+                        }}
+                        className={`px-4 py-2.5 flex items-center justify-between text-sm cursor-pointer transition-colors ${
+                          isSelected
+                            ? 'bg-[#5865F2]/25 text-white border-l-4 border-[#5865F2]'
+                            : 'text-gray-200 hover:bg-[#1E1F22]'
+                        }`}
+                      >
+                        <div className="flex items-center space-x-3 min-w-0 pr-2">
+                          <span className="shrink-0">{icon}</span>
+                          <span className={`truncate ${item.is_dir ? 'font-semibold text-white' : 'font-mono text-xs'}`}>
+                            {item.name}
+                          </span>
+                        </div>
+                        <div className="flex items-center space-x-2 shrink-0 text-xs text-gray-400">
+                          {!item.is_dir && <span>{formatBytes(item.size)}</span>}
+                          {!item.is_dir && item.editable && (
+                            <span className="text-[10px] bg-[#1E1F22] border border-[#111214] px-1.5 py-0.5 rounded text-gray-300">
+                              Éditable
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            <div className="lg:col-span-7 bg-[#111214] rounded-xl border border-[#1E1F22] flex flex-col overflow-hidden shadow-lg">
+              <div className="p-3 px-4 bg-[#1E1F22] border-b border-[#2B2D31] flex items-center justify-between shrink-0">
+                <div className="flex items-center space-x-2 min-w-0">
+                  <span className="text-xs font-mono text-gray-300 truncate">
+                    {selectedFilePath ? selectedFilePath : 'Aucun fichier sélectionné'}
+                  </span>
+                  {hasUnsavedFileChanges && (
+                    <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded-full font-medium shrink-0">
+                      ● Non sauvegardé
+                    </span>
+                  )}
+                </div>
+
+                {selectedFilePath && (
+                  <div className="flex items-center space-x-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setEditorContent(originalContent)}
+                      disabled={!hasUnsavedFileChanges}
+                      className="text-xs text-gray-400 hover:text-white disabled:opacity-40 px-2.5 py-1.5 rounded"
+                    >
+                      Annuler
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSaveFile}
+                      disabled={isSavingFile || !hasUnsavedFileChanges}
+                      className="bg-[#23A559] hover:bg-[#1D8B4A] disabled:opacity-40 text-white px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors shadow"
+                    >
+                      {isSavingFile ? 'Sauvegarde...' : '💾 Sauvegarder (Ctrl+S)'}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {fileFeedback && (
+                <div
+                  className={`px-4 py-2 text-xs border-b shrink-0 flex items-center justify-between ${
+                    fileFeedback.type === 'success'
+                      ? 'bg-[#23A559]/20 border-[#23A559]/40 text-[#23A559]'
+                      : 'bg-[#DA373C]/20 border-[#DA373C]/40 text-[#DA373C]'
+                  }`}
+                >
+                  <span>{fileFeedback.text}</span>
+                  <button onClick={() => setFileFeedback(null)} className="hover:opacity-75">
+                    ✕
+                  </button>
+                </div>
+              )}
+
+              {isLoadingFileContent ? (
+                <div className="flex-grow flex items-center justify-center text-gray-400 text-sm">
+                  Chargement de {selectedFileName}...
+                </div>
+              ) : !selectedFilePath ? (
+                <div className="flex-grow flex flex-col items-center justify-center text-gray-500 p-8 text-center">
+                  <span className="text-4xl mb-3">📝</span>
+                  <p className="text-white font-medium mb-1">Éditeur de code intégré</p>
+                  <p className="text-xs max-w-md">
+                    Sélectionnez un fichier <code className="text-gray-300">.yml</code>,{' '}
+                    <code className="text-gray-300">.json</code>, <code className="text-gray-300">.properties</code> ou{' '}
+                    <code className="text-gray-300">.txt</code> dans l'explorateur à gauche pour l'éditer directement.
+                  </p>
+                </div>
+              ) : (
+                <textarea
+                  value={editorContent}
+                  onChange={(e) => setEditorContent(e.target.value)}
+                  onKeyDown={(e) => {
+                    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+                      e.preventDefault();
+                      if (hasUnsavedFileChanges && !isSavingFile) {
+                        handleSaveFile();
+                      }
+                    }
+                  }}
+                  spellCheck={false}
+                  className="flex-grow w-full bg-[#111214] text-gray-100 p-4 font-mono text-sm leading-relaxed focus:outline-none resize-none"
+                />
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ========================================== */}
+        {/* ONGLET 6 : SAUVEGARDES (SNAPSHOTS .ZIP)    */}
+        {/* ========================================== */}
+        {activeTab === 'backups' && (
+          <div className="flex-grow overflow-y-auto space-y-6 pr-1">
+            <div className="bg-[#2B2D31] rounded-xl border border-[#1E1F22] p-6 text-white shadow-lg">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-5 border-b border-[#1E1F22]">
+                <div>
+                  <h3 className="text-lg font-bold">Créer un Snapshot instantané</h3>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Exécute automatiquement un <code className="text-gray-300">save-all</code> puis compresse le serveur dans une archive <code className="text-gray-300">.zip</code>.
+                  </p>
+                </div>
+
+                <form onSubmit={handleCreateBackup} className="flex gap-2">
+                  <input
+                    type="text"
+                    value={backupLabelInput}
+                    onChange={(e) => setBackupLabelInput(e.target.value)}
+                    placeholder="Nom (ex: avant-boss, v1...)"
+                    className="bg-[#1E1F22] text-white border border-[#111214] rounded-lg px-3.5 py-2 text-sm focus:outline-none focus:border-[#5865F2]"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isCreatingBackup}
+                    className="bg-[#23A559] hover:bg-[#1D8B4A] disabled:opacity-50 text-white px-5 py-2 rounded-lg text-sm font-semibold transition-colors shadow shrink-0"
+                  >
+                    {isCreatingBackup ? 'Compression en cours...' : '💾 + Nouveau Snapshot'}
+                  </button>
+                </form>
+              </div>
+
+              {backupFeedback && (
+                <div
+                  className={`mt-4 p-3.5 rounded-lg text-sm border ${
+                    backupFeedback.type === 'success'
+                      ? 'bg-[#23A559]/15 border-[#23A559]/50 text-[#23A559]'
+                      : 'bg-[#DA373C]/15 border-[#DA373C]/50 text-[#DA373C]'
+                  }`}
+                >
+                  {backupFeedback.text}
+                </div>
+              )}
+
+              <div className="mt-6">
+                <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">
+                  Archives disponibles ({backups.length})
+                </h4>
+
+                {isLoadingBackups ? (
+                  <div className="text-center text-gray-400 py-8 text-sm">Chargement des snapshots...</div>
+                ) : backups.length === 0 ? (
+                  <div className="bg-[#1E1F22] rounded-xl p-8 text-center text-gray-400 text-sm">
+                    Aucune sauvegarde pour le moment. Créez votre premier snapshot ci-dessus !
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    {backups.map((b) => {
+                      const isRestoring = restoringBackupName === b.name;
+                      return (
+                        <div
+                          key={b.name}
+                          className="bg-[#1E1F22] border border-[#111214] rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                        >
+                          <div>
+                            <div className="font-mono font-bold text-sm text-white flex items-center gap-2">
+                              <span>📦</span>
+                              <span>{b.name}</span>
+                            </div>
+                            <div className="text-xs text-gray-400 mt-1">
+                              Créé le {formatDate(b.created_at)} • Taille :{' '}
+                              <strong className="text-gray-200">{formatBytes(b.size)}</strong>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => handleRestoreBackup(b.name)}
+                              disabled={isRestoring}
+                              className="bg-[#5865F2] hover:bg-[#4752C4] disabled:opacity-50 text-white px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors"
+                            >
+                              {isRestoring ? 'Restauration...' : '↺ Restaurer ce snapshot'}
+                            </button>
+                            <button
+                              onClick={() => handleDeleteBackup(b.name)}
+                              className="bg-[#DA373C]/20 hover:bg-[#DA373C] text-red-300 hover:text-white px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors"
+                            >
+                              Supprimer
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================== */}
+        {/* ONGLET 7 : PLANIFICATEUR (TÂCHES CRON)     */}
+        {/* ========================================== */}
+        {activeTab === 'schedules' && (
+          <div className="flex-grow overflow-y-auto space-y-6 pr-1">
+            {/* Formulaire création de tâche Cron */}
+            <form
+              onSubmit={handleCreateSchedule}
+              className="bg-[#2B2D31] rounded-xl border border-[#1E1F22] p-6 text-white shadow-lg"
+            >
+              <h3 className="text-lg font-bold mb-1">Programmer une nouvelle tâche automatisée</h3>
+              <p className="text-xs text-gray-400 mb-5">
+                Le démon OurCraft exécute vos tâches en arrière-plan (reboot quotidien, sauvegarde auto, message RCON).
+              </p>
+
+              {scheduleFeedback && (
+                <div
+                  className={`mb-5 p-3.5 rounded-lg text-sm border ${
+                    scheduleFeedback.type === 'success'
+                      ? 'bg-[#23A559]/15 border-[#23A559]/50 text-[#23A559]'
+                      : 'bg-[#DA373C]/15 border-[#DA373C]/50 text-[#DA373C]'
+                  }`}
+                >
+                  {scheduleFeedback.text}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-400 uppercase mb-1.5">Nom de la tâche</label>
+                  <input
+                    type="text"
+                    value={schedName}
+                    onChange={(e) => setSchedName(e.target.value)}
+                    placeholder="ex: Reboot 4h du matin"
+                    className="w-full bg-[#1E1F22] text-white border border-[#111214] rounded-lg px-3.5 py-2 text-sm focus:outline-none focus:border-[#5865F2]"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-400 uppercase mb-1.5">Action à exécuter</label>
+                  <select
+                    value={schedAction}
+                    onChange={(e) => {
+                      setSchedAction(e.target.value);
+                      if (e.target.value === 'restart')
+                        setSchedPayload('Redémarrage automatique dans 5 secondes...');
+                      else if (e.target.value === 'backup') setSchedPayload('Sauvegarde automatique du monde...');
+                      else if (e.target.value === 'command') setSchedPayload('say Bienvenue sur le serveur !');
+                    }}
+                    className="w-full bg-[#1E1F22] text-white border border-[#111214] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#5865F2]"
+                  >
+                    <option value="restart">🔄 Redémarrer le serveur</option>
+                    <option value="backup">💾 Créer un Snapshot (.zip)</option>
+                    <option value="command">💬 Exécuter une commande RCON</option>
+                    <option value="stop">🛑 Arrêter le serveur</option>
+                    <option value="start">▶ Démarrer le serveur</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-400 uppercase mb-1.5">Fréquence</label>
+                  <select
+                    value={schedType}
+                    onChange={(e) => {
+                      setSchedType(e.target.value);
+                      setSchedValue(e.target.value === 'daily' ? '04:00' : '60');
+                    }}
+                    className="w-full bg-[#1E1F22] text-white border border-[#111214] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#5865F2]"
+                  >
+                    <option value="daily">Tous les jours à heure fixe</option>
+                    <option value="interval">Intervalle régulier (minutes)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-400 uppercase mb-1.5">
+                    {schedType === 'daily' ? 'Heure (HH:MM)' : 'Toutes les X minutes'}
+                  </label>
+                  {schedType === 'daily' ? (
+                    <input
+                      type="time"
+                      value={schedValue}
+                      onChange={(e) => setSchedValue(e.target.value)}
+                      className="w-full bg-[#1E1F22] text-white border border-[#111214] rounded-lg px-3.5 py-2 font-mono text-sm focus:outline-none focus:border-[#5865F2]"
+                      required
+                    />
+                  ) : (
+                    <input
+                      type="number"
+                      min={5}
+                      value={schedValue}
+                      onChange={(e) => setSchedValue(e.target.value)}
+                      placeholder="ex: 60"
+                      className="w-full bg-[#1E1F22] text-white border border-[#111214] rounded-lg px-3.5 py-2 font-mono text-sm focus:outline-none focus:border-[#5865F2]"
+                      required
+                    />
+                  )}
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-3 items-end">
+                <div className="flex-grow w-full">
+                  <label className="block text-xs font-bold text-gray-400 uppercase mb-1.5">
+                    {schedAction === 'command'
+                      ? 'Commande RCON à envoyer (ex: say Bonjour, save-all)'
+                      : 'Message d’annonce en jeu avant l’action (optionnel)'}
+                  </label>
+                  <input
+                    type="text"
+                    value={schedPayload}
+                    onChange={(e) => setSchedPayload(e.target.value)}
+                    className="w-full bg-[#1E1F22] text-white border border-[#111214] rounded-lg px-3.5 py-2 font-mono text-sm focus:outline-none focus:border-[#5865F2]"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={isSavingSchedule}
+                  className="bg-[#5865F2] hover:bg-[#4752C4] text-white px-5 py-2 rounded-lg text-sm font-semibold transition-colors shadow shrink-0"
+                >
+                  ＋ Ajouter la tâche
+                </button>
+              </div>
+            </form>
+
+            {/* Liste des tâches programmées */}
+            <div className="bg-[#2B2D31] rounded-xl border border-[#1E1F22] p-6 text-white shadow-lg">
+              <h3 className="text-base font-bold mb-4">Tâches planifiées ({schedules.length})</h3>
+              {schedules.length === 0 ? (
+                <div className="bg-[#1E1F22] rounded-xl p-8 text-center text-gray-400 text-sm">
+                  Aucune tâche automatisée configurée sur ce serveur.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {schedules.map((t) => (
+                    <div
+                      key={t.id}
+                      className="bg-[#1E1F22] border border-[#111214] rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                    >
+                      <div>
+                        <div className="flex items-center gap-2.5">
+                          <span className="font-bold text-white text-sm">{t.name}</span>
+                          <span className="text-xs font-mono bg-[#2B2D31] text-[#8EA1E1] px-2.5 py-0.5 rounded">
+                            {t.schedule_type === 'daily'
+                              ? `Tous les jours à ${t.schedule_value}`
+                              : `Toutes les ${t.schedule_value} min`}
+                          </span>
+                          <span className="text-xs bg-[#2B2D31] text-gray-300 px-2 py-0.5 rounded uppercase">
+                            {t.action_type}
+                          </span>
+                        </div>
+                        <div className="text-xs text-gray-400 mt-1 font-mono">
+                          {t.payload && <span>Payload: "{t.payload}" • </span>}
+                          <span>Dernière exécution : {t.last_run || 'Jamais'}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          onClick={() => handleRunScheduleNow(t.id)}
+                          className="bg-[#2B2D31] hover:bg-[#35373C] text-gray-200 px-3 py-1.5 rounded-lg text-xs font-medium"
+                          title="Tester et exécuter immédiatement"
+                        >
+                          ▶ Tester
+                        </button>
+                        <button
+                          onClick={() => handleToggleSchedule(t.id)}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${
+                            t.enabled
+                              ? 'bg-[#23A559]/20 text-[#23A559]'
+                              : 'bg-gray-600/30 text-gray-400'
+                          }`}
+                        >
+                          {t.enabled ? 'Actif' : 'En pause'}
+                        </button>
+                        <button
+                          onClick={() => handleDeleteSchedule(t.id)}
+                          className="text-gray-400 hover:text-[#DA373C] px-2 py-1.5 text-xs"
+                        >
+                          🗑️
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ========================================== */}
+        {/* ONGLET 8 : PARAMÈTRES                      */}
         {/* ========================================== */}
         {activeTab === 'settings' && (
           <div className="flex-grow overflow-y-auto space-y-6 pr-1">
-            {/* Carte 1 : Configuration Conteneur Docker & Jeu */}
             <form
               onSubmit={handleSaveDockerSettings}
               className="bg-[#2B2D31] rounded-xl border border-[#1E1F22] p-6 shadow-lg text-white"
@@ -769,7 +2211,6 @@ export default function ServerPanel() {
               )}
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
-                {/* Port */}
                 <div>
                   <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">
                     Port du serveur
@@ -783,10 +2224,8 @@ export default function ServerPanel() {
                     className="w-full bg-[#1E1F22] text-white border border-[#111214] rounded-lg px-4 py-2.5 font-mono text-sm focus:outline-none focus:border-[#5865F2]"
                     required
                   />
-                  <span className="text-xs text-gray-500 mt-1 block">Défaut Minecraft : 25565</span>
                 </div>
 
-                {/* RAM */}
                 <div>
                   <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">
                     RAM allouée (MEMORY)
@@ -810,15 +2249,12 @@ export default function ServerPanel() {
                       type="text"
                       value={ramInput}
                       onChange={(e) => setRamInput(e.target.value.toUpperCase())}
-                      placeholder="ex: 4G ou 4096M"
                       className="w-full bg-[#1E1F22] text-white border border-[#111214] rounded-lg px-3 py-2.5 font-mono text-sm focus:outline-none focus:border-[#5865F2]"
                       required
                     />
                   </div>
-                  <span className="text-xs text-gray-500 mt-1 block">Format: 2G, 4G, 6G, 4096M...</span>
                 </div>
 
-                {/* Type du serveur */}
                 <div>
                   <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">
                     Type de serveur (TYPE)
@@ -834,10 +2270,8 @@ export default function ServerPanel() {
                       </option>
                     ))}
                   </select>
-                  <span className="text-xs text-gray-500 mt-1 block">Image itzg/minecraft-server</span>
                 </div>
 
-                {/* Version du jeu */}
                 <div>
                   <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">
                     Version Minecraft (VERSION)
@@ -861,17 +2295,14 @@ export default function ServerPanel() {
                       type="text"
                       value={versionInput}
                       onChange={(e) => setVersionInput(e.target.value)}
-                      placeholder="ex: 1.20.4"
                       className="w-full bg-[#1E1F22] text-white border border-[#111214] rounded-lg px-3 py-2.5 font-mono text-sm focus:outline-none focus:border-[#5865F2]"
                       required
                     />
                   </div>
-                  <span className="text-xs text-gray-500 mt-1 block">LATEST ou version exacte</span>
                 </div>
               </div>
             </form>
 
-            {/* Carte 2 : Éditeur server.properties */}
             <form
               onSubmit={handleSaveProperties}
               className="bg-[#2B2D31] rounded-xl border border-[#1E1F22] p-6 shadow-lg text-white"
@@ -932,7 +2363,6 @@ export default function ServerPanel() {
                 <div className="text-gray-400 py-8 text-center">Chargement de server.properties...</div>
               ) : (
                 <div className="space-y-6">
-                  {/* Champs principaux */}
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
                     <div className="md:col-span-2 lg:col-span-3">
                       <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">
@@ -1033,7 +2463,6 @@ export default function ServerPanel() {
                     </div>
                   </div>
 
-                  {/* Interrupteurs booléens */}
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pt-2">
                     {BOOLEAN_PROPS.map((item) => {
                       const isEnabled = (serverProps[item.key] ?? 'false').toLowerCase() === 'true';
@@ -1064,7 +2493,6 @@ export default function ServerPanel() {
                     })}
                   </div>
 
-                  {/* Ajout ou modification d'une propriété personnalisée */}
                   <div className="pt-4 border-t border-[#1E1F22]">
                     <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">
                       Ajouter / Modifier une clé spécifique dans server.properties
@@ -1096,465 +2524,6 @@ export default function ServerPanel() {
                 </div>
               )}
             </form>
-          </div>
-        )}
-
-        {/* ========================================== */}
-        {/* ONGLET 3 : JOUEURS                         */}
-        {/* ========================================== */}
-        {activeTab === 'players' && (
-          <div className="flex-grow overflow-y-auto space-y-6 pr-1">
-            {actionToast && (
-              <div className="bg-[#5865F2]/20 border border-[#5865F2] text-white px-4 py-3 rounded-xl text-sm flex items-center justify-between shadow">
-                <span>{actionToast}</span>
-                <button onClick={() => setActionToast(null)} className="text-gray-300 hover:text-white">
-                  ✕
-                </button>
-              </div>
-            )}
-
-            {/* Carte principale : Joueurs connectés en temps réel */}
-            <div className="bg-[#2B2D31] rounded-xl border border-[#1E1F22] p-6 text-white shadow-lg">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-[#1E1F22]">
-                <div>
-                  <h2 className="text-xl font-bold flex items-center gap-3">
-                    <span>Joueurs en ligne</span>
-                    <span className="bg-[#1E1F22] border border-[#111214] px-3 py-0.5 rounded-full text-sm font-mono text-[#5865F2]">
-                      {playersData.count} / {playersData.max}
-                    </span>
-                  </h2>
-                  <p className="text-gray-400 text-sm mt-1">
-                    Liste actualisée en temps réel. Les boutons d'action envoient directement les commandes dans le WebSocket.
-                  </p>
-                </div>
-
-                <button
-                  onClick={fetchPlayers}
-                  disabled={isLoadingPlayers}
-                  className="bg-[#1E1F22] hover:bg-[#111214] border border-[#111214] text-gray-200 px-4 py-2 rounded-lg text-sm font-medium transition-colors self-start sm:self-auto"
-                >
-                  {isLoadingPlayers ? 'Actualisation...' : '↻ Actualiser'}
-                </button>
-              </div>
-
-              {!isRunning ? (
-                <div className="bg-[#1E1F22] border border-[#111214] rounded-xl p-8 text-center text-gray-400">
-                  <p className="text-lg font-medium text-white mb-1">Le serveur est actuellement arrêté</p>
-                  <p className="text-sm">Démarrez le serveur pour voir les joueurs connectés en direct et utiliser les actions rapides.</p>
-                </div>
-              ) : playersData.players.length === 0 ? (
-                <div className="bg-[#1E1F22] border border-[#111214] rounded-xl p-8 text-center text-gray-400">
-                  <p className="text-lg font-medium text-white mb-1">Aucun joueur connecté pour le moment</p>
-                  <p className="text-sm">Dès qu'un joueur rejoint la partie, il apparaîtra automatiquement ici.</p>
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {playersData.players.map((player) => {
-                    const isOp = playersData.ops.some((op) => op.toLowerCase() === player.toLowerCase());
-                    return (
-                      <div
-                        key={player}
-                        className="bg-[#1E1F22] border border-[#111214] rounded-xl p-4 flex items-center justify-between gap-4"
-                      >
-                        <div className="flex items-center space-x-3.5 min-w-0">
-                          <img
-                            src={`https://mc-heads.net/avatar/${encodeURIComponent(player)}/40`}
-                            alt={player}
-                            className="w-10 h-10 rounded-lg bg-[#111214] shrink-0"
-                          />
-                          <div className="min-w-0">
-                            <div className="flex items-center space-x-2">
-                              <span className="font-bold text-white truncate">{player}</span>
-                              {isOp && (
-                                <span className="bg-amber-500/20 text-amber-400 border border-amber-500/40 text-[11px] font-bold px-2 py-0.5 rounded uppercase">
-                                  OP
-                                </span>
-                              )}
-                            </div>
-                            <span className="text-xs text-[#23A559] flex items-center gap-1 mt-0.5">
-                              <span className="w-1.5 h-1.5 rounded-full bg-[#23A559]"></span> Connecté
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center space-x-2 shrink-0">
-                          {isOp ? (
-                            <button
-                              onClick={() => triggerPlayerAction('deop', player)}
-                              className="bg-amber-600/20 hover:bg-amber-600/40 text-amber-300 border border-amber-500/30 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors"
-                              title="Retirer les droits d'opérateur"
-                            >
-                              De-OP
-                            </button>
-                          ) : (
-                            <button
-                              onClick={() => triggerPlayerAction('op', player)}
-                              className="bg-[#5865F2]/20 hover:bg-[#5865F2] text-[#8EA1E1] hover:text-white border border-[#5865F2]/40 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors"
-                              title="Donner les droits d'opérateur (OP)"
-                            >
-                              OP
-                            </button>
-                          )}
-                          <button
-                            onClick={() => triggerPlayerAction('kick', player)}
-                            className="bg-orange-500/20 hover:bg-orange-500 text-orange-300 hover:text-white border border-orange-500/40 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors"
-                            title="Expulser du serveur (Kick)"
-                          >
-                            Kick
-                          </button>
-                          <button
-                            onClick={() => triggerPlayerAction('ban', player)}
-                            className="bg-[#DA373C]/20 hover:bg-[#DA373C] text-red-300 hover:text-white border border-[#DA373C]/40 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors"
-                            title="Bannir du serveur (Ban)"
-                          >
-                            Ban
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              {/* Action rapide sur un pseudo même s'il n'est pas encore dans la liste */}
-              <div className="mt-6 pt-5 border-t border-[#1E1F22] flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-                <div className="text-xs text-gray-400">
-                  Action rapide par pseudo (OP, Kick ou Ban via WebSocket) :
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <input
-                    type="text"
-                    value={manualPlayerInput}
-                    onChange={(e) => setManualPlayerInput(e.target.value)}
-                    placeholder="Pseudo du joueur..."
-                    className="bg-[#1E1F22] text-white border border-[#111214] rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-[#5865F2]"
-                  />
-                  <button
-                    type="button"
-                    disabled={!manualPlayerInput.trim() || !isRunning}
-                    onClick={() => {
-                      triggerPlayerAction('op', manualPlayerInput.trim());
-                      setManualPlayerInput('');
-                    }}
-                    className="bg-[#5865F2] hover:bg-[#4752C4] disabled:opacity-40 text-white px-3 py-1.5 rounded-lg text-xs font-semibold"
-                  >
-                    OP
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!manualPlayerInput.trim() || !isRunning}
-                    onClick={() => {
-                      triggerPlayerAction('kick', manualPlayerInput.trim());
-                      setManualPlayerInput('');
-                    }}
-                    className="bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg text-xs font-semibold"
-                  >
-                    Kick
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!manualPlayerInput.trim() || !isRunning}
-                    onClick={() => {
-                      triggerPlayerAction('ban', manualPlayerInput.trim());
-                      setManualPlayerInput('');
-                    }}
-                    className="bg-[#DA373C] hover:bg-[#C92B30] disabled:opacity-40 text-white px-3 py-1.5 rounded-lg text-xs font-semibold"
-                  >
-                    Ban
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Listes Opérateurs (ops.json) et Bannis (banned-players.json) */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="bg-[#2B2D31] rounded-xl border border-[#1E1F22] p-5 text-white shadow-lg">
-                <h3 className="text-base font-bold mb-3 flex items-center justify-between">
-                  <span>👑 Opérateurs (ops.json)</span>
-                  <span className="text-xs bg-[#1E1F22] px-2.5 py-0.5 rounded-full text-gray-400">
-                    {playersData.ops.length}
-                  </span>
-                </h3>
-                {playersData.ops.length === 0 ? (
-                  <p className="text-sm text-gray-400">Aucun opérateur enregistré.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {playersData.ops.map((op) => (
-                      <div
-                        key={op}
-                        className="bg-[#1E1F22] px-3.5 py-2 rounded-lg flex items-center justify-between text-sm"
-                      >
-                        <span className="font-medium text-amber-300">{op}</span>
-                        <button
-                          onClick={() => triggerPlayerAction('deop', op)}
-                          disabled={!isRunning}
-                          className="text-xs text-gray-400 hover:text-[#DA373C] disabled:opacity-40"
-                        >
-                          Retirer OP
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="bg-[#2B2D31] rounded-xl border border-[#1E1F22] p-5 text-white shadow-lg">
-                <h3 className="text-base font-bold mb-3 flex items-center justify-between">
-                  <span>🚫 Joueurs bannis (banned-players.json)</span>
-                  <span className="text-xs bg-[#1E1F22] px-2.5 py-0.5 rounded-full text-gray-400">
-                    {playersData.banned.length}
-                  </span>
-                </h3>
-                {playersData.banned.length === 0 ? (
-                  <p className="text-sm text-gray-400">Aucun joueur banni.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {playersData.banned.map((bannedName) => (
-                      <div
-                        key={bannedName}
-                        className="bg-[#1E1F22] px-3.5 py-2 rounded-lg flex items-center justify-between text-sm"
-                      >
-                        <span className="font-medium text-red-300">{bannedName}</span>
-                        <button
-                          onClick={() => triggerPlayerAction('pardon', bannedName)}
-                          disabled={!isRunning}
-                          className="text-xs text-[#23A559] hover:underline disabled:opacity-40"
-                        >
-                          Débannir (Pardon)
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ========================================== */}
-        {/* ONGLET 4 : FICHIERS (WEB FTP)              */}
-        {/* ========================================== */}
-        {activeTab === 'files' && (
-          <div className="flex-grow grid grid-cols-1 lg:grid-cols-12 gap-4 overflow-hidden min-h-0">
-            {/* COLONNE GAUCHE : Explorateur d'arborescence */}
-            <div className="lg:col-span-5 bg-[#2B2D31] rounded-xl border border-[#1E1F22] flex flex-col overflow-hidden shadow-lg">
-              {/* Barre d'outils & Fil d'Ariane */}
-              <div className="p-3.5 bg-[#1E1F22] border-b border-[#2B2D31] flex flex-col gap-2 shrink-0">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center flex-wrap gap-1 text-xs font-mono text-gray-300">
-                    <button
-                      onClick={() => fetchDirectory('')}
-                      className="hover:text-[#5865F2] font-bold px-1.5 py-0.5 rounded bg-[#2B2D31]"
-                    >
-                      /data
-                    </button>
-                    {breadcrumbs.map((segment, idx) => {
-                      const subPath = breadcrumbs.slice(0, idx + 1).join('/');
-                      return (
-                        <span key={subPath} className="flex items-center gap-1">
-                          <span className="text-gray-500">/</span>
-                          <button
-                            onClick={() => fetchDirectory(subPath)}
-                            className="hover:text-[#5865F2] px-1 py-0.5 rounded hover:bg-[#2B2D31]"
-                          >
-                            {segment}
-                          </button>
-                        </span>
-                      );
-                    })}
-                  </div>
-
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      onClick={() => setShowNewFileInput((v) => !v)}
-                      className="bg-[#5865F2] hover:bg-[#4752C4] text-white px-2.5 py-1 rounded text-xs font-medium transition-colors"
-                      title="Nouveau fichier dans ce dossier"
-                    >
-                      + Fichier
-                    </button>
-                    <button
-                      onClick={() => fetchDirectory(currentDir)}
-                      className="bg-[#2B2D31] hover:bg-[#111214] text-gray-300 px-2.5 py-1 rounded text-xs transition-colors"
-                      title="Rafraîchir le dossier"
-                    >
-                      ↻
-                    </button>
-                  </div>
-                </div>
-
-                {showNewFileInput && (
-                  <form onSubmit={handleCreateNewFile} className="flex gap-2 pt-1">
-                    <input
-                      type="text"
-                      value={newFileName}
-                      onChange={(e) => setNewFileName(e.target.value)}
-                      placeholder="ex: config.yml"
-                      className="flex-grow bg-[#111214] text-white border border-[#2B2D31] rounded px-2.5 py-1 text-xs font-mono focus:outline-none focus:border-[#5865F2]"
-                      autoFocus
-                    />
-                    <button
-                      type="submit"
-                      className="bg-[#23A559] text-white px-3 py-1 rounded text-xs font-medium"
-                    >
-                      Créer
-                    </button>
-                  </form>
-                )}
-              </div>
-
-              {/* Liste des dossiers et fichiers */}
-              <div className="flex-grow overflow-y-auto divide-y divide-[#1E1F22]/60">
-                {currentDir && (
-                  <button
-                    onClick={navigateUpDirectory}
-                    className="w-full px-4 py-2.5 text-left text-sm text-gray-300 hover:bg-[#1E1F22] flex items-center space-x-3 transition-colors"
-                  >
-                    <span>↩️</span>
-                    <span className="font-mono">.. (Dossier parent)</span>
-                  </button>
-                )}
-
-                {isLoadingFiles ? (
-                  <div className="p-8 text-center text-gray-400 text-sm">Chargement de l'arborescence...</div>
-                ) : fileItems.length === 0 ? (
-                  <div className="p-8 text-center text-gray-400 text-sm">
-                    Ce dossier est vide. (Lancez le serveur une première fois pour générer les fichiers Minecraft).
-                  </div>
-                ) : (
-                  fileItems.map((item) => {
-                    const isSelected = selectedFilePath === item.path;
-                    let icon = '📄';
-                    if (item.is_dir) icon = '📁';
-                    else if (item.name.endsWith('.yml') || item.name.endsWith('.yaml') || item.name.endsWith('.json') || item.name.endsWith('.properties')) icon = '⚙️';
-                    else if (item.name.endsWith('.jar') || item.name.endsWith('.gz')) icon = '📦';
-                    else if (item.name.endsWith('.log') || item.name.endsWith('.txt')) icon = '📝';
-
-                    return (
-                      <div
-                        key={item.path}
-                        onClick={() => {
-                          if (item.is_dir) {
-                            fetchDirectory(item.path);
-                          } else if (item.editable) {
-                            openFileInEditor(item.path, item.name);
-                          } else {
-                            setFileFeedback({
-                              type: 'error',
-                              text: `Le fichier "${item.name}" est un fichier binaire et ne peut pas être édité en mode texte.`,
-                            });
-                          }
-                        }}
-                        className={`px-4 py-2.5 flex items-center justify-between text-sm cursor-pointer transition-colors ${
-                          isSelected
-                            ? 'bg-[#5865F2]/25 text-white border-l-4 border-[#5865F2]'
-                            : 'text-gray-200 hover:bg-[#1E1F22]'
-                        }`}
-                      >
-                        <div className="flex items-center space-x-3 min-w-0 pr-2">
-                          <span className="shrink-0">{icon}</span>
-                          <span className={`truncate ${item.is_dir ? 'font-semibold text-white' : 'font-mono text-xs'}`}>
-                            {item.name}
-                          </span>
-                        </div>
-                        <div className="flex items-center space-x-2 shrink-0 text-xs text-gray-400">
-                          {!item.is_dir && <span>{formatBytes(item.size)}</span>}
-                          {!item.is_dir && item.editable && (
-                            <span className="text-[10px] bg-[#1E1F22] border border-[#111214] px-1.5 py-0.5 rounded text-gray-300">
-                              Éditable
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-
-            {/* COLONNE DROITE : Éditeur de code intégré */}
-            <div className="lg:col-span-7 bg-[#111214] rounded-xl border border-[#1E1F22] flex flex-col overflow-hidden shadow-lg">
-              {/* Header de l'éditeur */}
-              <div className="p-3 px-4 bg-[#1E1F22] border-b border-[#2B2D31] flex items-center justify-between shrink-0">
-                <div className="flex items-center space-x-2 min-w-0">
-                  <span className="text-xs font-mono text-gray-300 truncate">
-                    {selectedFilePath ? selectedFilePath : 'Aucun fichier sélectionné'}
-                  </span>
-                  {hasUnsavedFileChanges && (
-                    <span className="text-xs bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded-full font-medium shrink-0">
-                      ● Non sauvegardé
-                    </span>
-                  )}
-                </div>
-
-                {selectedFilePath && (
-                  <div className="flex items-center space-x-2 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => setEditorContent(originalContent)}
-                      disabled={!hasUnsavedFileChanges}
-                      className="text-xs text-gray-400 hover:text-white disabled:opacity-40 px-2.5 py-1.5 rounded"
-                    >
-                      Annuler
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleSaveFile}
-                      disabled={isSavingFile || !hasUnsavedFileChanges}
-                      className="bg-[#23A559] hover:bg-[#1D8B4A] disabled:opacity-40 text-white px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors shadow"
-                    >
-                      {isSavingFile ? 'Sauvegarde...' : '💾 Sauvegarder (Ctrl+S)'}
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {fileFeedback && (
-                <div
-                  className={`px-4 py-2 text-xs border-b shrink-0 flex items-center justify-between ${
-                    fileFeedback.type === 'success'
-                      ? 'bg-[#23A559]/20 border-[#23A559]/40 text-[#23A559]'
-                      : 'bg-[#DA373C]/20 border-[#DA373C]/40 text-[#DA373C]'
-                  }`}
-                >
-                  <span>{fileFeedback.text}</span>
-                  <button onClick={() => setFileFeedback(null)} className="hover:opacity-75">
-                    ✕
-                  </button>
-                </div>
-              )}
-
-              {/* Corps de l'éditeur */}
-              {isLoadingFileContent ? (
-                <div className="flex-grow flex items-center justify-center text-gray-400 text-sm">
-                  Chargement de {selectedFileName}...
-                </div>
-              ) : !selectedFilePath ? (
-                <div className="flex-grow flex flex-col items-center justify-center text-gray-500 p-8 text-center">
-                  <span className="text-4xl mb-3">📝</span>
-                  <p className="text-white font-medium mb-1">Éditeur de code intégré</p>
-                  <p className="text-xs max-w-md">
-                    Sélectionnez un fichier <code className="text-gray-300">.yml</code>,{' '}
-                    <code className="text-gray-300">.json</code>, <code className="text-gray-300">.properties</code> ou{' '}
-                    <code className="text-gray-300">.txt</code> dans l'explorateur à gauche pour l'éditer directement.
-                  </p>
-                </div>
-              ) : (
-                <textarea
-                  value={editorContent}
-                  onChange={(e) => setEditorContent(e.target.value)}
-                  onKeyDown={(e) => {
-                    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-                      e.preventDefault();
-                      if (hasUnsavedFileChanges && !isSavingFile) {
-                        handleSaveFile();
-                      }
-                    }
-                  }}
-                  spellCheck={false}
-                  className="flex-grow w-full bg-[#111214] text-gray-100 p-4 font-mono text-sm leading-relaxed focus:outline-none resize-none"
-                />
-              )}
-            </div>
           </div>
         )}
       </div>

@@ -1,9 +1,15 @@
 import os
 import re
 import json
+import time
+import shutil
+import zipfile
+import urllib.request
+import urllib.parse
 import docker
 import asyncio
 import threading
+from datetime import datetime
 from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query
@@ -15,7 +21,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from database.database import AsyncSessionLocal, engine, Base
-from database.models import MinecraftServer, Node
+from database.models import MinecraftServer, Node, ScheduledTask
 
 
 _db_initialized = False
@@ -51,7 +57,9 @@ async def ensure_db_schema():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await ensure_db_schema()
+    scheduler_task = asyncio.create_task(scheduler_background_loop())
     yield
+    scheduler_task.cancel()
 
 
 app = FastAPI(title="OurCraft API", lifespan=lifespan)
@@ -108,6 +116,20 @@ class ServerCreateConfig(BaseModel):
     server_type: str = "PAPER"
     version: str = "LATEST"
     ram: str = "2G"
+
+class AddonInstallRequest(BaseModel):
+    project_id: str
+    title: Optional[str] = None
+
+class BackupCreateRequest(BaseModel):
+    label: Optional[str] = "snapshot"
+
+class ScheduleCreateRequest(BaseModel):
+    name: str
+    action_type: str       # "restart", "backup", "command", "stop", "start"
+    schedule_type: str     # "daily" ("HH:MM") ou "interval" (minutes)
+    schedule_value: str    # ex: "04:00" ou "60"
+    payload: Optional[str] = ""
 
 
 # --- UTILITAIRES ---
@@ -993,3 +1015,735 @@ async def save_settings(config: AppSettings):
         "message": f"Paramètres sauvegardés et dossier '{cleaned_path}' prêt !",
         "settings": get_config(),
     }
+
+
+# ==============================================================================
+# BLOC 2 — FONCTIONNALITÉS AVANCÉES DU SERVEUR
+# 1. MONITORING (CPU / RAM / RÉSEAU EN TEMPS RÉEL)
+# ==============================================================================
+
+def parse_ram_to_mb(ram_str: str) -> int:
+    s = (ram_str or "2G").strip().upper()
+    try:
+        if s.endswith("G"):
+            return int(float(s[:-1]) * 1024)
+        if s.endswith("M"):
+            return int(float(s[:-1]))
+        return int(s)
+    except Exception:
+        return 2048
+
+
+def _get_docker_stats_sync(container_name: str, allocated_ram_mb: int) -> dict:
+    client = docker.from_env()
+    try:
+        container = client.containers.get(container_name)
+        if container.status != "running":
+            return {
+                "online": False,
+                "cpu_percent": 0.0,
+                "ram_used_mb": 0,
+                "ram_limit_mb": allocated_ram_mb,
+                "ram_percent": 0.0,
+                "net_rx_mb": 0.0,
+                "net_tx_mb": 0.0,
+                "pids": 0,
+            }
+
+        stats = container.stats(stream=False)
+
+        # Calcul CPU %
+        cpu_percent = 0.0
+        cpu_stats = stats.get("cpu_stats", {})
+        precpu_stats = stats.get("precpu_stats", {})
+        cpu_delta = (
+            cpu_stats.get("cpu_usage", {}).get("total_usage", 0)
+            - precpu_stats.get("cpu_usage", {}).get("total_usage", 0)
+        )
+        system_delta = (
+            cpu_stats.get("system_cpu_usage", 0)
+            - precpu_stats.get("system_cpu_usage", 0)
+        )
+        online_cpus = (
+            cpu_stats.get("online_cpus")
+            or len(cpu_stats.get("cpu_usage", {}).get("percpu_usage") or [1])
+        )
+        if system_delta > 0 and cpu_delta > 0:
+            cpu_percent = round((cpu_delta / system_delta) * online_cpus * 100.0, 1)
+
+        # Calcul RAM (Mo)
+        mem_stats = stats.get("memory_stats", {})
+        mem_usage = mem_stats.get("usage", 0)
+        mem_cache = mem_stats.get("stats", {}).get("inactive_file") or mem_stats.get("stats", {}).get("cache") or 0
+        actual_mem = max(0, mem_usage - mem_cache)
+        ram_used_mb = round(actual_mem / (1024 * 1024), 1)
+        ram_limit_mb = max(allocated_ram_mb, 256)
+        ram_percent = min(100.0, round((ram_used_mb / ram_limit_mb) * 100.0, 1))
+
+        # Trafic Réseau
+        networks = stats.get("networks", {})
+        rx_bytes = sum(net.get("rx_bytes", 0) for net in networks.values())
+        tx_bytes = sum(net.get("tx_bytes", 0) for net in networks.values())
+
+        pids = stats.get("pids_stats", {}).get("current", 0)
+
+        return {
+            "online": True,
+            "cpu_percent": cpu_percent,
+            "ram_used_mb": ram_used_mb,
+            "ram_limit_mb": ram_limit_mb,
+            "ram_percent": ram_percent,
+            "net_rx_mb": round(rx_bytes / (1024 * 1024), 2),
+            "net_tx_mb": round(tx_bytes / (1024 * 1024), 2),
+            "pids": pids,
+        }
+    except docker.errors.NotFound:
+        return {
+            "online": False,
+            "cpu_percent": 0.0,
+            "ram_used_mb": 0,
+            "ram_limit_mb": allocated_ram_mb,
+            "ram_percent": 0.0,
+            "net_rx_mb": 0.0,
+            "net_tx_mb": 0.0,
+            "pids": 0,
+        }
+
+
+@app.get("/api/servers/{server_name}/stats")
+async def get_server_stats(server_name: str, db: AsyncSession = Depends(get_db)):
+    """Récupère en direct la consommation CPU, RAM et Réseau du conteneur Docker"""
+    server = await get_server_or_404(server_name, db)
+    allocated_mb = parse_ram_to_mb(getattr(server, "ram", "2G"))
+    return await asyncio.to_thread(_get_docker_stats_sync, f"ourcraft_{server_name}", allocated_mb)
+
+
+# ==============================================================================
+# 2. MODS & PLUGINS (TÉLÉCHARGEUR INTÉGRÉ MODRINTH + GESTION LOCALE)
+# ==============================================================================
+
+def get_addon_context(server: MinecraftServer) -> dict:
+    s_type = (getattr(server, "server_type", "PAPER") or "PAPER").upper()
+    if s_type in {"FORGE", "FABRIC", "NEOFORGE"}:
+        return {
+            "folder": "mods",
+            "kind": "mod",
+            "label": "Mods",
+            "loader": s_type.lower(),
+            "project_type": "mod",
+        }
+    elif s_type in {"PAPER", "PURPUR", "SPIGOT"}:
+        return {
+            "folder": "plugins",
+            "kind": "plugin",
+            "label": "Plugins",
+            "loader": s_type.lower(),
+            "project_type": "plugin",
+        }
+    else:
+        return {
+            "folder": "mods",
+            "kind": "mod",
+            "label": "Mods / Addons",
+            "loader": "fabric",
+            "project_type": "mod",
+        }
+
+
+def _modrinth_get_json(url: str):
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "OurCraft-Panel/2.0 (https://github.com/Xenon99o9/OurCraft)"}
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+@app.get("/api/servers/{server_name}/addons/installed")
+async def list_installed_addons(server_name: str, db: AsyncSession = Depends(get_db)):
+    """Liste les fichiers .jar (et .jar.disabled) installés dans /mods ou /plugins"""
+    server = await get_server_or_404(server_name, db)
+    ctx = get_addon_context(server)
+    target_dir = resolve_safe_path(server.path, ctx["folder"])
+    os.makedirs(target_dir, exist_ok=True)
+
+    items = []
+    for entry in os.scandir(target_dir):
+        if entry.is_file() and (entry.name.endswith(".jar") or entry.name.endswith(".jar.disabled")):
+            stat = entry.stat()
+            enabled = entry.name.endswith(".jar")
+            items.append({
+                "filename": entry.name,
+                "size": stat.st_size,
+                "modified": int(stat.st_mtime),
+                "enabled": enabled,
+            })
+
+    items.sort(key=lambda x: x["filename"].lower())
+    return {
+        "context": ctx,
+        "server_type": getattr(server, "server_type", "PAPER"),
+        "version": getattr(server, "version", "LATEST"),
+        "items": items,
+    }
+
+
+@app.get("/api/servers/{server_name}/addons/search")
+async def search_modrinth_addons(
+    server_name: str,
+    q: str = Query("", description="Recherche de mod ou plugin"),
+    db: AsyncSession = Depends(get_db)
+):
+    """Recherche des Mods ou Plugins sur l'API officielle Modrinth filtrés pour le serveur"""
+    server = await get_server_or_404(server_name, db)
+    ctx = get_addon_context(server)
+    mc_version = (getattr(server, "version", "LATEST") or "LATEST").strip()
+
+    facets = [[f"categories:{ctx['loader']}"]]
+    if mc_version.upper() != "LATEST":
+        facets.append([f"versions:{mc_version}"])
+
+    params = {
+        "query": q.strip(),
+        "limit": 18,
+        "index": "relevance" if q.strip() else "downloads",
+        "facets": json.dumps(facets),
+    }
+    url = f"https://api.modrinth.com/v2/search?{urllib.parse.urlencode(params)}"
+
+    try:
+        data = await asyncio.to_thread(_modrinth_get_json, url)
+        hits = data.get("hits", [])
+        # Si aucun résultat avec le filtre strict de version, on élargit au loader
+        if not hits and mc_version.upper() != "LATEST":
+            fallback_params = {
+                "query": q.strip(),
+                "limit": 18,
+                "index": "relevance" if q.strip() else "downloads",
+                "facets": json.dumps([[f"categories:{ctx['loader']}"]]),
+            }
+            url_fb = f"https://api.modrinth.com/v2/search?{urllib.parse.urlencode(fallback_params)}"
+            data = await asyncio.to_thread(_modrinth_get_json, url_fb)
+            hits = data.get("hits", [])
+
+        results = []
+        for h in hits:
+            results.append({
+                "project_id": h.get("project_id"),
+                "slug": h.get("slug"),
+                "title": h.get("title"),
+                "description": h.get("description"),
+                "author": h.get("author"),
+                "downloads": h.get("downloads", 0),
+                "icon_url": h.get("icon_url"),
+                "categories": h.get("categories", []),
+            })
+        return {"context": ctx, "results": results}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Erreur lors de la recherche Modrinth : {str(e)}")
+
+
+def _download_addon_sync(project_id: str, loader: str, mc_version: str, target_dir: str) -> dict:
+    # 1. Chercher les versions disponibles sur Modrinth pour ce projet
+    params = {"loaders": json.dumps([loader])}
+    if mc_version.upper() != "LATEST":
+        params["game_versions"] = json.dumps([mc_version])
+
+    url = f"https://api.modrinth.com/v2/project/{project_id}/version?{urllib.parse.urlencode(params)}"
+    versions = _modrinth_get_json(url)
+
+    # Fallback sans filtre game_version si LATEST ou version voisine compatible
+    if not versions:
+        url_fb = f"https://api.modrinth.com/v2/project/{project_id}/version?{urllib.parse.urlencode({'loaders': json.dumps([loader])})}"
+        versions = _modrinth_get_json(url_fb)
+
+    if not versions:
+        url_any = f"https://api.modrinth.com/v2/project/{project_id}/version"
+        versions = _modrinth_get_json(url_any)
+
+    if not versions:
+        raise ValueError("Aucune version téléchargeable trouvée pour ce projet.")
+
+    chosen_version = versions[0]
+    files = chosen_version.get("files", [])
+    primary_file = next((f for f in files if f.get("primary")), files[0] if files else None)
+    if not primary_file or not primary_file.get("url"):
+        raise ValueError("Aucun fichier .jar attaché à cette version.")
+
+    filename = os.path.basename(primary_file["filename"])
+    if not filename.endswith(".jar"):
+        filename += ".jar"
+
+    os.makedirs(target_dir, exist_ok=True)
+    dest_path = os.path.join(target_dir, filename)
+
+    req = urllib.request.Request(
+        primary_file["url"],
+        headers={"User-Agent": "OurCraft-Panel/2.0"}
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp, open(dest_path, "wb") as out_f:
+        shutil.copyfileobj(resp, out_f)
+
+    return {
+        "filename": filename,
+        "version_number": chosen_version.get("version_number", ""),
+        "size": os.path.getsize(dest_path),
+    }
+
+
+@app.post("/api/servers/{server_name}/addons/install")
+async def install_modrinth_addon(
+    server_name: str,
+    payload: AddonInstallRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Télécharge et installe directement un Mod ou Plugin depuis Modrinth dans le dossier du serveur"""
+    server = await get_server_or_404(server_name, db)
+    ctx = get_addon_context(server)
+    target_dir = resolve_safe_path(server.path, ctx["folder"])
+    mc_version = (getattr(server, "version", "LATEST") or "LATEST").strip()
+
+    try:
+        info = await asyncio.to_thread(
+            _download_addon_sync,
+            payload.project_id,
+            ctx["loader"],
+            mc_version,
+            target_dir
+        )
+        return {
+            "status": "success",
+            "message": f"'{info['filename']}' (v{info['version_number']}) installé dans /{ctx['folder']} !",
+            "installed": info,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Échec de l'installation : {str(e)}")
+
+
+@app.put("/api/servers/{server_name}/addons/{filename}/toggle")
+async def toggle_installed_addon(
+    server_name: str,
+    filename: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Active ou désactive un mod/plugin en le renommant (.jar <-> .jar.disabled)"""
+    server = await get_server_or_404(server_name, db)
+    ctx = get_addon_context(server)
+    target_dir = resolve_safe_path(server.path, ctx["folder"])
+    file_path = resolve_safe_path(target_dir, filename)
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Fichier introuvable.")
+
+    if filename.endswith(".jar.disabled"):
+        new_name = filename[:-9]  # retire .disabled
+    elif filename.endswith(".jar"):
+        new_name = filename + ".disabled"
+    else:
+        raise HTTPException(status_code=400, detail="Extension non supportée.")
+
+    new_path = resolve_safe_path(target_dir, new_name)
+    os.rename(file_path, new_path)
+    return {"status": "success", "filename": new_name}
+
+
+@app.delete("/api/servers/{server_name}/addons/{filename}")
+async def delete_installed_addon(
+    server_name: str,
+    filename: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Supprime un fichier .jar du dossier /mods ou /plugins"""
+    server = await get_server_or_404(server_name, db)
+    ctx = get_addon_context(server)
+    target_dir = resolve_safe_path(server.path, ctx["folder"])
+    file_path = resolve_safe_path(target_dir, filename)
+
+    if not os.path.exists(file_path) or not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="Fichier introuvable.")
+
+    os.remove(file_path)
+    return {"status": "success", "message": f"'{filename}' supprimé."}
+
+
+# ==============================================================================
+# 3. SAUVEGARDES / SNAPSHOTS (CRÉATION .ZIP, LISTE, RESTAURATION, SUPPRESSION)
+# ==============================================================================
+
+BACKUP_FOLDER_NAME = ".ourcraft_backups"
+
+
+def _create_backup_zip_sync(server_path: str, label: str) -> dict:
+    backup_dir = os.path.join(server_path, BACKUP_FOLDER_NAME)
+    os.makedirs(backup_dir, exist_ok=True)
+
+    safe_label = re.sub(r"[^a-zA-Z0-9_-]", "-", (label or "snapshot").strip())[:40] or "snapshot"
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    zip_filename = f"{timestamp}_{safe_label}.zip"
+    zip_filepath = os.path.join(backup_dir, zip_filename)
+
+    with zipfile.ZipFile(zip_filepath, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, dirs, files in os.walk(server_path):
+            # Ne jamais inclure le dossier des backups lui-même
+            dirs[:] = [d for d in dirs if d != BACKUP_FOLDER_NAME]
+            for file in files:
+                abs_file = os.path.join(root, file)
+                rel_file = os.path.relpath(abs_file, server_path)
+                try:
+                    zf.write(abs_file, rel_file)
+                except Exception:
+                    pass
+
+    stat = os.stat(zip_filepath)
+    return {
+        "name": zip_filename,
+        "size": stat.st_size,
+        "created_at": int(stat.st_mtime),
+    }
+
+
+def _restore_backup_zip_sync(server_path: str, backup_name: str):
+    backup_dir = os.path.join(server_path, BACKUP_FOLDER_NAME)
+    zip_filepath = resolve_safe_path(backup_dir, backup_name)
+    if not os.path.exists(zip_filepath):
+        raise FileNotFoundError("Archive de sauvegarde introuvable.")
+
+    # Nettoyer le contenu actuel du serveur (hormis le dossier .ourcraft_backups)
+    for entry in os.scandir(server_path):
+        if entry.name == BACKUP_FOLDER_NAME:
+            continue
+        if entry.is_dir(follow_symlinks=False):
+            shutil.rmtree(entry.path, ignore_errors=True)
+        else:
+            try:
+                os.remove(entry.path)
+            except Exception:
+                pass
+
+    with zipfile.ZipFile(zip_filepath, "r") as zf:
+        zf.extractall(server_path)
+
+
+@app.get("/api/servers/{server_name}/backups")
+async def list_server_backups(server_name: str, db: AsyncSession = Depends(get_db)):
+    """Liste les snapshots (.zip) disponibles pour ce serveur"""
+    server = await get_server_or_404(server_name, db)
+    backup_dir = os.path.join(server.path, BACKUP_FOLDER_NAME)
+    if not os.path.exists(backup_dir):
+        return {"backups": []}
+
+    backups = []
+    for entry in os.scandir(backup_dir):
+        if entry.is_file() and entry.name.endswith(".zip"):
+            stat = entry.stat()
+            backups.append({
+                "name": entry.name,
+                "size": stat.st_size,
+                "created_at": int(stat.st_mtime),
+            })
+
+    backups.sort(key=lambda x: x["created_at"], reverse=True)
+    return {"backups": backups}
+
+
+@app.post("/api/servers/{server_name}/backups")
+async def create_server_backup(
+    server_name: str,
+    payload: BackupCreateRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Force un save-all en jeu (si allumé) puis compresse le serveur dans une archive .zip"""
+    server = await get_server_or_404(server_name, db)
+
+    # Si le conteneur tourne, on force la sauvegarde du monde sur le disque avant de zipper
+    try:
+        client = docker.from_env()
+        container = client.containers.get(f"ourcraft_{server_name}")
+        if container.status == "running":
+            container.exec_run("rcon-cli save-all")
+            await asyncio.sleep(1.0)
+    except Exception:
+        pass
+
+    try:
+        info = await asyncio.to_thread(_create_backup_zip_sync, server.path, payload.label or "snapshot")
+        return {
+            "status": "success",
+            "message": f"Snapshot '{info['name']}' créé avec succès !",
+            "backup": info,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la création du snapshot : {str(e)}")
+
+
+@app.post("/api/servers/{server_name}/backups/{backup_name}/restore")
+async def restore_server_backup(
+    server_name: str,
+    backup_name: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Arrête le serveur s'il tourne, restaure l'archive .zip et le rallume s'il était en ligne"""
+    server = await get_server_or_404(server_name, db)
+
+    client = docker.from_env()
+    was_running = False
+    container = None
+    try:
+        container = client.containers.get(f"ourcraft_{server_name}")
+        was_running = container.status == "running"
+        if was_running:
+            container.stop(timeout=10)
+    except docker.errors.NotFound:
+        pass
+
+    try:
+        await asyncio.to_thread(_restore_backup_zip_sync, server.path, backup_name)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la restauration : {str(e)}")
+
+    if was_running and container:
+        try:
+            container.start()
+        except Exception:
+            pass
+
+    return {
+        "status": "success",
+        "message": (
+            f"Snapshot '{backup_name}' restauré et serveur redémarré !"
+            if was_running
+            else f"Snapshot '{backup_name}' restauré avec succès !"
+        ),
+    }
+
+
+@app.delete("/api/servers/{server_name}/backups/{backup_name}")
+async def delete_server_backup(
+    server_name: str,
+    backup_name: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Supprime une archive de sauvegarde"""
+    server = await get_server_or_404(server_name, db)
+    backup_dir = os.path.join(server.path, BACKUP_FOLDER_NAME)
+    target_zip = resolve_safe_path(backup_dir, backup_name)
+
+    if not os.path.exists(target_zip) or not os.path.isfile(target_zip):
+        raise HTTPException(status_code=404, detail="Snapshot introuvable.")
+
+    os.remove(target_zip)
+    return {"status": "success", "message": f"Snapshot '{backup_name}' supprimé."}
+
+
+# ==============================================================================
+# 4. PLANIFICATEUR / CRON (TÂCHES AUTOMATISÉES PAR SERVEUR)
+# ==============================================================================
+
+async def execute_scheduled_action(task: ScheduledTask, db: AsyncSession):
+    """Exécute l'action d'une tâche planifiée (restart, backup, command, stop, start)"""
+    res = await db.execute(select(MinecraftServer).filter_by(name=task.server_name))
+    server = res.scalars().first()
+    if not server:
+        return
+
+    client = docker.from_env()
+    container_name = f"ourcraft_{server.name}"
+
+    if task.action_type == "restart":
+        try:
+            container = client.containers.get(container_name)
+            if container.status == "running":
+                msg = (task.payload or "[OurCraft] Redémarrage automatique programmé dans 5 secondes...").strip()
+                container.exec_run(f"rcon-cli say {msg}")
+                await asyncio.sleep(5)
+                container.restart(timeout=10)
+            else:
+                container.start()
+        except docker.errors.NotFound:
+            create_server_container(client, server)
+
+    elif task.action_type == "backup":
+        try:
+            container = client.containers.get(container_name)
+            if container.status == "running":
+                container.exec_run("rcon-cli save-all")
+                if task.payload:
+                    container.exec_run(f"rcon-cli say {task.payload.strip()}")
+                await asyncio.sleep(1)
+        except Exception:
+            pass
+        await asyncio.to_thread(_create_backup_zip_sync, server.path, f"auto-{task.name}")
+
+    elif task.action_type == "command":
+        try:
+            container = client.containers.get(container_name)
+            if container.status == "running" and task.payload:
+                clean_cmd = task.payload.strip().lstrip("/")
+                container.exec_run(f"rcon-cli {clean_cmd}")
+        except Exception:
+            pass
+
+    elif task.action_type == "stop":
+        try:
+            container = client.containers.get(container_name)
+            if container.status == "running":
+                if task.payload:
+                    container.exec_run(f"rcon-cli say {task.payload.strip()}")
+                    await asyncio.sleep(3)
+                container.stop(timeout=10)
+        except Exception:
+            pass
+
+    elif task.action_type == "start":
+        try:
+            container = client.containers.get(container_name)
+            if container.status != "running":
+                container.start()
+        except docker.errors.NotFound:
+            create_server_container(client, server)
+
+
+async def scheduler_background_loop():
+    """Boucle d'arrière-plan qui vérifie toutes les 25s si une tâche planifiée doit s'exécuter"""
+    while True:
+        try:
+            await asyncio.sleep(25)
+            if not _db_initialized:
+                continue
+
+            now = datetime.now()
+            current_hhmm = now.strftime("%H:%M")
+            today_prefix = now.strftime("%Y-%m-%d")
+
+            async with AsyncSessionLocal() as session:
+                res = await session.execute(select(ScheduledTask).filter_by(enabled=True))
+                tasks = res.scalars().all()
+
+                for task in tasks:
+                    should_run = False
+
+                    if task.schedule_type == "daily":
+                        # S'exécute une fois par jour lorsque HH:MM correspond
+                        if task.schedule_value == current_hhmm and not (task.last_run or "").startswith(f"{today_prefix} {current_hhmm}"):
+                            should_run = True
+
+                    elif task.schedule_type == "interval":
+                        # S'exécute toutes les X minutes
+                        try:
+                            interval_mins = max(1, int(task.schedule_value))
+                            if not task.last_run:
+                                should_run = True
+                            else:
+                                last_dt = datetime.strptime(task.last_run, "%Y-%m-%d %H:%M:%S")
+                                elapsed_mins = (now - last_dt).total_seconds() / 60.0
+                                if elapsed_mins >= interval_mins:
+                                    should_run = True
+                        except Exception:
+                            should_run = True
+
+                    if should_run:
+                        task.last_run = now.strftime("%Y-%m-%d %H:%M:%S")
+                        await session.commit()
+                        try:
+                            await execute_scheduled_action(task, session)
+                        except Exception as e:
+                            print(f"[Scheduler] Erreur tâche {task.name}: {e}")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"[Scheduler] Erreur boucle: {e}")
+
+
+@app.get("/api/servers/{server_name}/schedules")
+async def list_server_schedules(server_name: str, db: AsyncSession = Depends(get_db)):
+    """Liste les tâches planifiées (Cron) d'un serveur"""
+    await get_server_or_404(server_name, db)
+    res = await db.execute(select(ScheduledTask).filter_by(server_name=server_name))
+    tasks = res.scalars().all()
+    return [
+        {
+            "id": t.id,
+            "name": t.name,
+            "action_type": t.action_type,
+            "schedule_type": t.schedule_type,
+            "schedule_value": t.schedule_value,
+            "payload": t.payload,
+            "enabled": t.enabled,
+            "last_run": t.last_run,
+        }
+        for t in tasks
+    ]
+
+
+@app.post("/api/servers/{server_name}/schedules")
+async def create_server_schedule(
+    server_name: str,
+    payload: ScheduleCreateRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Crée une nouvelle tâche automatisée pour ce serveur"""
+    await get_server_or_404(server_name, db)
+    new_task = ScheduledTask(
+        server_name=server_name,
+        name=payload.name.strip(),
+        action_type=payload.action_type,
+        schedule_type=payload.schedule_type,
+        schedule_value=payload.schedule_value.strip(),
+        payload=(payload.payload or "").strip(),
+        enabled=True,
+        last_run="",
+    )
+    db.add(new_task)
+    await db.commit()
+    return {"status": "success", "message": f"Tâche '{new_task.name}' programmée avec succès !"}
+
+
+@app.put("/api/servers/{server_name}/schedules/{task_id}/toggle")
+async def toggle_server_schedule(
+    server_name: str,
+    task_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """Active ou met en pause une tâche planifiée"""
+    res = await db.execute(select(ScheduledTask).filter_by(id=task_id, server_name=server_name))
+    task = res.scalars().first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Tâche introuvable.")
+    task.enabled = not task.enabled
+    await db.commit()
+    return {"status": "success", "enabled": task.enabled}
+
+
+@app.post("/api/servers/{server_name}/schedules/{task_id}/run")
+async def run_server_schedule_now(
+    server_name: str,
+    task_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """Exécute immédiatement une tâche planifiée pour la tester"""
+    res = await db.execute(select(ScheduledTask).filter_by(id=task_id, server_name=server_name))
+    task = res.scalars().first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Tâche introuvable.")
+
+    task.last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    await db.commit()
+    await execute_scheduled_action(task, db)
+    return {"status": "success", "message": f"Tâche '{task.name}' exécutée immédiatement !"}
+
+
+@app.delete("/api/servers/{server_name}/schedules/{task_id}")
+async def delete_server_schedule(
+    server_name: str,
+    task_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """Supprime une tâche planifiée"""
+    res = await db.execute(select(ScheduledTask).filter_by(id=task_id, server_name=server_name))
+    task = res.scalars().first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Tâche introuvable.")
+    await db.delete(task)
+    await db.commit()
+    return {"status": "success", "message": "Tâche supprimée."}
+

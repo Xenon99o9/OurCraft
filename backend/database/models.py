@@ -1,4 +1,4 @@
-from sqlalchemy import String, Integer, ForeignKey
+from sqlalchemy import String, Integer, Boolean, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .database import Base
 
@@ -28,6 +28,19 @@ class MinecraftServer(Base):
 
     # Relation inverse
     node = relationship("Node", back_populates="servers")
+
+class ScheduledTask(Base):
+    __tablename__ = "scheduled_tasks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    server_name: Mapped[str] = mapped_column(String(100), index=True)
+    name: Mapped[str] = mapped_column(String(100))           # ex: "Reboot 04h00"
+    action_type: Mapped[str] = mapped_column(String(50))     # "restart", "backup", "command", "stop", "start"
+    schedule_type: Mapped[str] = mapped_column(String(30))   # "daily" (HH:MM) ou "interval" (minutes)
+    schedule_value: Mapped[str] = mapped_column(String(50))  # ex: "04:00" ou "60"
+    payload: Mapped[str] = mapped_column(String(255), default="") # Message d'annonce ou commande RCON
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_run: Mapped[str] = mapped_column(String(50), default="")
 
 class User(Base):
     __tablename__ = "users"
