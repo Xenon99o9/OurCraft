@@ -1,4 +1,4 @@
-from sqlalchemy import String, Integer, Boolean, ForeignKey
+from sqlalchemy import String, Integer, Boolean, Text, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .database import Base
 
@@ -48,3 +48,14 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(50), unique=True)
     password_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(30), default="admin") # "admin" ou "subuser"
+    permissions_json: Mapped[str] = mapped_column(Text, default="{}") # JSON des droits par serveur
+
+class BlockedIP(Base):
+    __tablename__ = "blocked_ips"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ip_address: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    reason: Mapped[str] = mapped_column(String(255), default="Bloquée par le Bouclier Réseau OurCraft")
+    source_server: Mapped[str] = mapped_column(String(100), default="Global")
+    created_at: Mapped[str] = mapped_column(String(50), default="")

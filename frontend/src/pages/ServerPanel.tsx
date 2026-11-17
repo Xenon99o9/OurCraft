@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useServerStore } from '../store/useServerStore';
+import { useAuthStore, type ServerPermKey } from '../store/useAuthStore';
 
 const API_BASE = `http://${window.location.hostname}:8000`;
 const WS_BASE = `ws://${window.location.hostname}:8000`;
@@ -172,6 +173,7 @@ export default function ServerPanel() {
   const { serverName } = useParams();
   const navigate = useNavigate();
   const { servers, startServer, stopServer, fetchServers, deleteServer, updateServerSettings } = useServerStore();
+  const { user, hasPermission } = useAuthStore();
 
   const [activeTab, setActiveTab] = useState<TabType>('console');
   const [logs, setLogs] = useState<string[]>([]);
@@ -902,9 +904,12 @@ export default function ServerPanel() {
   if (!server) return <div className="text-white p-8">Chargement ou serveur introuvable...</div>;
 
   const isModdedServer = ['FORGE', 'FABRIC', 'NEOFORGE'].includes((server.server_type || 'PAPER').toUpperCase());
+  const canPower = hasPermission(server.name, 'power');
+  const isAdmin = user?.role === 'admin';
 
-  const tabs: {
+  const allTabs: {
     id: TabType;
+    perm: ServerPermKey;
     label: string;
     subtitle: string;
     fullTitle: string;
@@ -914,6 +919,7 @@ export default function ServerPanel() {
   }[] = [
     {
       id: 'console',
+      perm: 'console',
       label: 'Console',
       subtitle: 'Terminal & RCON',
       fullTitle: 'Console Temps Réel & Commandes RCON',
@@ -922,6 +928,7 @@ export default function ServerPanel() {
     },
     {
       id: 'monitoring',
+      perm: 'view',
       label: 'Monitoring',
       subtitle: 'CPU & RAM Live',
       fullTitle: 'Monitoring des Ressources en Direct',
@@ -931,6 +938,7 @@ export default function ServerPanel() {
     },
     {
       id: 'addons',
+      perm: 'addons',
       label: isModdedServer ? 'Mods' : 'Plugins',
       subtitle: 'Catalogue Modrinth',
       fullTitle: `Gestionnaire de ${isModdedServer ? 'Mods' : 'Plugins'} & Téléchargeur Modrinth`,
@@ -940,6 +948,7 @@ export default function ServerPanel() {
     },
     {
       id: 'players',
+      perm: 'console',
       label: 'Joueurs',
       subtitle: 'Modération Live',
       fullTitle: 'Joueurs Connectés & Modération en Direct',
@@ -949,6 +958,7 @@ export default function ServerPanel() {
     },
     {
       id: 'files',
+      perm: 'files',
       label: 'Fichiers',
       subtitle: 'Web FTP & Code',
       fullTitle: 'Explorateur de Fichiers & Éditeur de Configuration',
@@ -957,6 +967,7 @@ export default function ServerPanel() {
     },
     {
       id: 'backups',
+      perm: 'addons',
       label: 'Sauvegardes',
       subtitle: 'Snapshots .zip',
       fullTitle: 'Gestionnaire de Sauvegardes (Snapshots)',
@@ -966,6 +977,7 @@ export default function ServerPanel() {
     },
     {
       id: 'schedules',
+      perm: 'addons',
       label: 'Planificateur',
       subtitle: 'Tâches Cron',
       fullTitle: 'Planificateur de Tâches Automatisées (Cron)',
@@ -975,6 +987,7 @@ export default function ServerPanel() {
     },
     {
       id: 'settings',
+      perm: 'settings',
       label: 'Paramètres',
       subtitle: 'Docker & Règles',
       fullTitle: 'Configuration du Serveur & Moteur Docker',
@@ -983,7 +996,8 @@ export default function ServerPanel() {
     },
   ];
 
-  const currentTabInfo = tabs.find((t) => t.id === activeTab) || tabs[0];
+  const tabs = allTabs.filter((t) => hasPermission(server.name, t.perm));
+  const currentTabInfo = tabs.find((t) => t.id === activeTab) || tabs[0] || allTabs[1];
   const hasUnsavedFileChanges = selectedFilePath !== null && editorContent !== originalContent;
   const breadcrumbs = currentDir ? currentDir.split('/').filter(Boolean) : [];
 
@@ -1031,29 +1045,36 @@ export default function ServerPanel() {
 
         {/* BOUTONS D'ACTION (Démarrer, Arrêter, Supprimer) */}
         <div className="flex items-center space-x-2.5 self-end lg:self-auto">
-          <button
-            onClick={() => startServer(server)}
-            disabled={isRunning}
-            className="bg-[#23A559] hover:bg-[#1D8B4A] disabled:opacity-40 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-semibold transition-colors shadow text-sm"
-          >
-            ▶ Démarrer
-          </button>
-          <button
-            onClick={() => stopServer(server.name)}
-            disabled={!isRunning}
-            className="bg-[#DA373C] hover:bg-[#C92B30] disabled:opacity-40 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-semibold transition-colors shadow text-sm"
-          >
-            ■ Arrêter
-          </button>
+          {canPower && (
+            <>
+              <button
+                onClick={() => startServer(server)}
+                disabled={isRunning}
+                className="bg-[#23A559] hover:bg-[#1D8B4A] disabled:opacity-40 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-semibold transition-colors shadow text-sm"
+              >
+                ▶ Démarrer
+              </button>
+              <button
+                onClick={() => stopServer(server.name)}
+                disabled={!isRunning}
+                className="bg-[#DA373C] hover:bg-[#C92B30] disabled:opacity-40 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-semibold transition-colors shadow text-sm"
+              >
+                ■ Arrêter
+              </button>
+            </>
+          )}
 
-          <div className="w-px h-7 bg-[#1E1F22] mx-1"></div>
-
-          <button
-            onClick={handleDelete}
-            className="text-gray-400 hover:text-[#DA373C] hover:bg-[#DA373C]/10 px-3 py-2 rounded-lg font-medium transition-colors text-xs border border-transparent hover:border-[#DA373C]/50"
-          >
-            Supprimer
-          </button>
+          {isAdmin && (
+            <>
+              <div className="w-px h-7 bg-[#1E1F22] mx-1"></div>
+              <button
+                onClick={handleDelete}
+                className="text-gray-400 hover:text-[#DA373C] hover:bg-[#DA373C]/10 px-3 py-2 rounded-lg font-medium transition-colors text-xs border border-transparent hover:border-[#DA373C]/50"
+              >
+                Supprimer
+              </button>
+            </>
+          )}
         </div>
       </header>
 

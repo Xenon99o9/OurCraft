@@ -2,6 +2,10 @@ import os
 import re
 import json
 import time
+import hmac
+import base64
+import hashlib
+import secrets
 import shutil
 import zipfile
 import urllib.request
@@ -12,7 +16,7 @@ import threading
 from datetime import datetime
 from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -21,7 +25,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from database.database import AsyncSessionLocal, engine, Base
-from database.models import MinecraftServer, Node, ScheduledTask
+from database.models import MinecraftServer, Node, ScheduledTask, User, BlockedIP
 
 
 _db_initialized = False
@@ -45,6 +49,12 @@ async def ensure_db_schema():
                 ))
                 await conn.execute(text(
                     "ALTER TABLE minecraft_servers ADD COLUMN IF NOT EXISTS version VARCHAR(50) DEFAULT 'LATEST' NOT NULL;"
+                ))
+                await conn.execute(text(
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(30) DEFAULT 'admin' NOT NULL;"
+                ))
+                await conn.execute(text(
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions_json TEXT DEFAULT '{}' NOT NULL;"
                 ))
             _db_initialized = True
             return
@@ -1746,4 +1756,514 @@ async def delete_server_schedule(
     await db.delete(task)
     await db.commit()
     return {"status": "success", "message": "Tâche supprimée."}
+
+
+# ==============================================================================
+# BLOC 3 — SÉCURITÉ ET ADMINISTRATION
+# 1. AUTHENTIFICATION & COMPTES MULTI-UTILISATEURS (DROITS PAR SERVEUR)
+# ==============================================================================
+
+AUTH_SECRET = os.getenv("OURCRAFT_SECRET", "ourcraft-v2-secret-key-hmac-2026")
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120000)
+    return f"{salt}${dk.hex()}"
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    if "$" not in stored_hash:
+        return False
+    salt, expected_hex = stored_hash.split("$", 1)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120000)
+    return hmac.compare_digest(dk.hex(), expected_hex)
+
+
+def create_auth_token(user_id: int, username: str, role: str) -> str:
+    payload = json.dumps({
+        "uid": user_id,
+        "sub": username,
+        "role": role,
+        "exp": int(time.time()) + 86400 * 7,  # Valide 7 jours
+    }).encode("utf-8")
+    b64_payload = base64.urlsafe_b64encode(payload).decode("utf-8").rstrip("=")
+    sig = hmac.new(AUTH_SECRET.encode("utf-8"), b64_payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{b64_payload}.{sig}"
+
+
+def decode_auth_token(token: str) -> Optional[dict]:
+    try:
+        if "." not in token:
+            return None
+        b64_payload, sig = token.split(".", 1)
+        expected_sig = hmac.new(AUTH_SECRET.encode("utf-8"), b64_payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected_sig):
+            return None
+        padding = "=" * (-len(b64_payload) % 4)
+        data = json.loads(base64.urlsafe_b64decode(b64_payload + padding).decode("utf-8"))
+        if data.get("exp", 0) < int(time.time()):
+            return None
+        return data
+    except Exception:
+        return None
+
+
+def serialize_user(u: User) -> dict:
+    try:
+        perms = json.loads(u.permissions_json or "{}")
+    except Exception:
+        perms = {}
+    return {
+        "id": u.id,
+        "username": u.username,
+        "role": getattr(u, "role", "admin") or "admin",
+        "permissions": perms,
+    }
+
+
+class AuthLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class UserCreateUpdateRequest(BaseModel):
+    username: str
+    password: Optional[str] = None
+    role: str = "subuser"  # "admin" ou "subuser"
+    permissions: Dict[str, Dict[str, bool]] = {}
+
+
+@app.get("/api/auth/status")
+async def get_auth_status(db: AsyncSession = Depends(get_db)):
+    """Indique si au moins un compte existe déjà en base de données"""
+    res = await db.execute(select(User))
+    users = res.scalars().all()
+    return {"has_users": len(users) > 0, "count": len(users)}
+
+
+@app.post("/api/auth/setup")
+async def setup_initial_admin(payload: AuthLoginRequest, db: AsyncSession = Depends(get_db)):
+    """Crée le tout premier compte Administrateur central lors du premier lancement"""
+    res = await db.execute(select(User))
+    if res.scalars().first():
+        raise HTTPException(status_code=400, detail="Un compte administrateur existe déjà.")
+
+    username = payload.username.strip()
+    if len(username) < 2 or len(payload.password) < 4:
+        raise HTTPException(status_code=400, detail="Nom d'utilisateur ou mot de passe trop court.")
+
+    admin_user = User(
+        username=username,
+        password_hash=hash_password(payload.password),
+        role="admin",
+        permissions_json="{}",
+    )
+    db.add(admin_user)
+    await db.commit()
+    await db.refresh(admin_user)
+
+    token = create_auth_token(admin_user.id, admin_user.username, "admin")
+    return {"token": token, "user": serialize_user(admin_user)}
+
+
+@app.post("/api/auth/login")
+async def login_user(payload: AuthLoginRequest, db: AsyncSession = Depends(get_db)):
+    """Authentifie un compte Admin ou Sous-compte et renvoie son jeton et ses permissions"""
+    res = await db.execute(select(User).filter_by(username=payload.username.strip()))
+    user = res.scalars().first()
+    if not user or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Identifiants incorrects.")
+
+    token = create_auth_token(user.id, user.username, user.role or "admin")
+    return {"token": token, "user": serialize_user(user)}
+
+
+@app.get("/api/auth/me")
+async def get_current_user_profile(
+    authorization: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_db)
+):
+    """Vérifie le token actif et renvoie les droits à jour de l'utilisateur"""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Non authentifié.")
+    token = authorization.split(" ", 1)[1].strip()
+    decoded = decode_auth_token(token)
+    if not decoded:
+        raise HTTPException(status_code=401, detail="Session expirée ou invalide.")
+
+    res = await db.execute(select(User).filter_by(id=decoded["uid"]))
+    user = res.scalars().first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Utilisateur introuvable.")
+    return {"user": serialize_user(user)}
+
+
+@app.get("/api/users")
+async def list_all_users(db: AsyncSession = Depends(get_db)):
+    """Liste tous les comptes (Admin central + sous-comptes) et leurs droits"""
+    res = await db.execute(select(User))
+    users = res.scalars().all()
+    return [serialize_user(u) for u in users]
+
+
+@app.post("/api/users")
+async def create_sub_user(payload: UserCreateUpdateRequest, db: AsyncSession = Depends(get_db)):
+    """Crée un sous-compte ou un co-administrateur avec des permissions par serveur"""
+    username = payload.username.strip()
+    if not username or not payload.password:
+        raise HTTPException(status_code=400, detail="Nom d'utilisateur et mot de passe requis.")
+
+    res = await db.execute(select(User).filter_by(username=username))
+    if res.scalars().first():
+        raise HTTPException(status_code=400, detail="Ce nom d'utilisateur existe déjà.")
+
+    new_user = User(
+        username=username,
+        password_hash=hash_password(payload.password),
+        role=payload.role if payload.role in {"admin", "subuser"} else "subuser",
+        permissions_json=json.dumps(payload.permissions or {}),
+    )
+    db.add(new_user)
+    await db.commit()
+    await db.refresh(new_user)
+    return {"status": "success", "user": serialize_user(new_user)}
+
+
+@app.put("/api/users/{user_id}")
+async def update_sub_user(
+    user_id: int,
+    payload: UserCreateUpdateRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Met à jour les droits par serveur, le rôle ou le mot de passe d'un utilisateur"""
+    res = await db.execute(select(User).filter_by(id=user_id))
+    user = res.scalars().first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable.")
+
+    user.username = payload.username.strip() or user.username
+    user.role = payload.role if payload.role in {"admin", "subuser"} else user.role
+    user.permissions_json = json.dumps(payload.permissions or {})
+    if payload.password and payload.password.strip():
+        user.password_hash = hash_password(payload.password.strip())
+
+    await db.commit()
+    await db.refresh(user)
+    return {"status": "success", "user": serialize_user(user)}
+
+
+@app.delete("/api/users/{user_id}")
+async def delete_sub_user(user_id: int, db: AsyncSession = Depends(get_db)):
+    """Supprime un sous-compte (protège contre la suppression du dernier Admin)"""
+    res = await db.execute(select(User).filter_by(id=user_id))
+    user = res.scalars().first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable.")
+
+    if user.role == "admin":
+        res_admins = await db.execute(select(User).filter_by(role="admin"))
+        if len(res_admins.scalars().all()) <= 1:
+            raise HTTPException(status_code=400, detail="Impossible de supprimer le dernier compte Administrateur.")
+
+    await db.delete(user)
+    await db.commit()
+    return {"status": "success", "message": f"Compte '{user.username}' supprimé."}
+
+
+# ==============================================================================
+# 2. BOUCLIER RÉSEAU (ANALYSE TRAFIC, HISTORIQUE IP & BLOCAGE D'ATTAQUES)
+# ==============================================================================
+
+# Regex pour extraire les connexions IP des logs Minecraft (Vanilla / Paper / Spigot / Forge)
+# Ex: [14:22:01] [Server thread/INFO]: Pseudo[/192.168.1.25:54321] logged in with entity id...
+# Ex: [14:23:10] [User Authenticator #1/INFO]: Disconnecting com.mojang.authlib.GameProfile...[name=Pseudo] (/192.168.1.25:54321): You are banned
+LOG_IP_LOGIN_RE = re.compile(
+    r"\[(\d{2}:\d{2}:\d{2})\].*?:\s+([a-zA-Z0-9_.-]+)\[/(\d{1,3}(?:\.\d{1,3}){3}):(\d+)\]\s+logged in",
+    re.IGNORECASE,
+)
+LOG_IP_DISCONNECT_RE = re.compile(
+    r"\[(\d{2}:\d{2}:\d{2})\].*?(?:name=([a-zA-Z0-9_.-]+).*?)?\(/(\d{1,3}(?:\.\d{1,3}){3}):(\d+)\):\s*(.*)",
+    re.IGNORECASE,
+)
+
+
+class BlockIPRequest(BaseModel):
+    ip_address: str
+    reason: Optional[str] = "Bloquée par le Bouclier Réseau OurCraft"
+    source_server: Optional[str] = "Global"
+
+
+class LockdownRequest(BaseModel):
+    enabled: bool
+
+
+@app.get("/api/security/overview")
+async def get_security_overview(db: AsyncSession = Depends(get_db)):
+    """Analyse globale du trafic, historique des connexions IP et liste noire du Bouclier Réseau"""
+    res_servers = await db.execute(select(MinecraftServer))
+    servers = res_servers.scalars().all()
+
+    res_blocked = await db.execute(select(BlockedIP))
+    db_blocked = res_blocked.scalars().all()
+    blocked_map = {
+        b.ip_address: {
+            "id": b.id,
+            "ip_address": b.ip_address,
+            "reason": b.reason,
+            "source_server": b.source_server,
+            "created_at": b.created_at,
+        }
+        for b in db_blocked
+    }
+
+    # 1. Analyser les logs de chaque serveur pour extraire l'historique IP et synchroniser banned-ips.json
+    connection_history = []
+    ip_counter: Dict[str, dict] = {}
+    lockdown_servers = 0
+
+    for srv in servers:
+        # Vérifier si white-list=true sur ce serveur
+        props_path = os.path.join(srv.path, "server.properties")
+        if os.path.exists(props_path):
+            try:
+                with open(props_path, "r", encoding="utf-8", errors="replace") as pf:
+                    if "white-list=true" in pf.read().lower():
+                        lockdown_servers += 1
+            except Exception:
+                pass
+
+        # Lire banned-ips.json
+        banned_ips_file = os.path.join(srv.path, "banned-ips.json")
+        if os.path.exists(banned_ips_file):
+            try:
+                with open(banned_ips_file, "r", encoding="utf-8") as bf:
+                    for entry in json.load(bf):
+                        ip_val = entry.get("ip")
+                        if ip_val and ip_val not in blocked_map:
+                            blocked_map[ip_val] = {
+                                "id": 0,
+                                "ip_address": ip_val,
+                                "reason": entry.get("reason", "Bannie dans banned-ips.json"),
+                                "source_server": srv.name,
+                                "created_at": entry.get("created", ""),
+                            }
+            except Exception:
+                pass
+
+        # Parser logs/latest.log pour extraire les IPs de connexion
+        log_file = os.path.join(srv.path, "logs", "latest.log")
+        if os.path.exists(log_file):
+            try:
+                with open(log_file, "r", encoding="utf-8", errors="replace") as lf:
+                    lines = lf.readlines()[-400:]
+                for line in lines:
+                    m_login = LOG_IP_LOGIN_RE.search(line)
+                    if m_login:
+                        time_str, player, ip_addr, src_port = m_login.groups()
+                        is_blocked = ip_addr in blocked_map
+                        connection_history.append({
+                            "time": time_str,
+                            "server": srv.name,
+                            "player": player,
+                            "ip": ip_addr,
+                            "port": int(src_port),
+                            "status": "blocked" if is_blocked else "accepted",
+                            "details": "Connexion authentifiée en jeu",
+                        })
+                        info = ip_counter.setdefault(ip_addr, {"ip": ip_addr, "count": 0, "players": set(), "servers": set(), "rejected": 0})
+                        info["count"] += 1
+                        info["players"].add(player)
+                        info["servers"].add(srv.name)
+                        continue
+
+                    m_disc = LOG_IP_DISCONNECT_RE.search(line)
+                    if m_disc:
+                        time_str, player, ip_addr, src_port, reason = m_disc.groups()
+                        connection_history.append({
+                            "time": time_str,
+                            "server": srv.name,
+                            "player": player or "Inconnu",
+                            "ip": ip_addr,
+                            "port": int(src_port),
+                            "status": "rejected",
+                            "details": reason.strip()[:80],
+                        })
+                        info = ip_counter.setdefault(ip_addr, {"ip": ip_addr, "count": 0, "players": set(), "servers": set(), "rejected": 0})
+                        info["count"] += 1
+                        info["rejected"] += 1
+                        if player:
+                            info["players"].add(player)
+                        info["servers"].add(srv.name)
+            except Exception:
+                pass
+
+    connection_history.reverse()
+
+    # Résumé par adresse IP pour détecter d'éventuelles attaques / floods
+    ip_summary = []
+    suspicious_count = 0
+    for ip_addr, data in ip_counter.items():
+        risk = "normal"
+        if ip_addr in blocked_map:
+            risk = "blocked"
+        elif data["rejected"] >= 5 or data["count"] >= 20 or len(data["players"]) >= 4:
+            risk = "critical"
+            suspicious_count += 1
+        elif data["rejected"] >= 2 or data["count"] >= 10:
+            risk = "elevated"
+
+        ip_summary.append({
+            "ip": ip_addr,
+            "total_connections": data["count"],
+            "rejected_attempts": data["rejected"],
+            "players": sorted(list(data["players"])),
+            "servers": sorted(list(data["servers"])),
+            "risk": risk,
+            "is_blocked": ip_addr in blocked_map,
+        })
+
+    ip_summary.sort(key=lambda x: (x["rejected_attempts"], x["total_connections"]), reverse=True)
+
+    return {
+        "threat_level": "critical" if suspicious_count > 0 else "normal",
+        "suspicious_ips_count": suspicious_count,
+        "blocked_ips": list(blocked_map.values()),
+        "ip_summary": ip_summary,
+        "connection_history": connection_history[:100],
+        "lockdown_active": len(servers) > 0 and lockdown_servers == len(servers),
+        "total_servers": len(servers),
+    }
+
+
+@app.post("/api/security/block-ip")
+async def block_ip_address(payload: BlockIPRequest, db: AsyncSession = Depends(get_db)):
+    """Bloque une adresse IP globalement (BDD + banned-ips.json + ban-ip RCON sur tous les serveurs actifs)"""
+    ip_addr = payload.ip_address.strip()
+    if not ip_addr:
+        raise HTTPException(status_code=400, detail="Adresse IP invalide.")
+
+    reason = (payload.reason or "Bloquée par le Bouclier Réseau OurCraft").strip()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    res = await db.execute(select(BlockedIP).filter_by(ip_address=ip_addr))
+    existing = res.scalars().first()
+    if not existing:
+        db.add(BlockedIP(
+            ip_address=ip_addr,
+            reason=reason,
+            source_server=payload.source_server or "Global",
+            created_at=now_str,
+        ))
+        await db.commit()
+
+    # Appliquer dans banned-ips.json et via RCON sur tous les serveurs
+    res_servers = await db.execute(select(MinecraftServer))
+    servers = res_servers.scalars().all()
+    client = docker.from_env()
+
+    for srv in servers:
+        banned_ips_file = os.path.join(srv.path, "banned-ips.json")
+        entries = []
+        if os.path.exists(banned_ips_file):
+            try:
+                with open(banned_ips_file, "r", encoding="utf-8") as bf:
+                    entries = json.load(bf)
+            except Exception:
+                entries = []
+
+        if not any(isinstance(e, dict) and e.get("ip") == ip_addr for e in entries):
+            entries.append({
+                "ip": ip_addr,
+                "created": now_str,
+                "source": "OurCraft Shield",
+                "expires": "forever",
+                "reason": reason,
+            })
+            try:
+                with open(banned_ips_file, "w", encoding="utf-8") as bf:
+                    json.dump(entries, bf, indent=2)
+            except Exception:
+                pass
+
+        try:
+            container = client.containers.get(f"ourcraft_{srv.name}")
+            if container.status == "running":
+                container.exec_run(f"rcon-cli ban-ip {ip_addr} {reason}")
+        except Exception:
+            pass
+
+    return {"status": "success", "message": f"L'adresse IP {ip_addr} a été bloquée sur l'ensemble des serveurs."}
+
+
+@app.delete("/api/security/block-ip/{ip_address}")
+async def unblock_ip_address(ip_address: str, db: AsyncSession = Depends(get_db)):
+    """Débloque une adresse IP (BDD + banned-ips.json + pardon-ip RCON)"""
+    ip_addr = ip_address.strip()
+    res = await db.execute(select(BlockedIP).filter_by(ip_address=ip_addr))
+    existing = res.scalars().first()
+    if existing:
+        await db.delete(existing)
+        await db.commit()
+
+    res_servers = await db.execute(select(MinecraftServer))
+    servers = res_servers.scalars().all()
+    client = docker.from_env()
+
+    for srv in servers:
+        banned_ips_file = os.path.join(srv.path, "banned-ips.json")
+        if os.path.exists(banned_ips_file):
+            try:
+                with open(banned_ips_file, "r", encoding="utf-8") as bf:
+                    entries = json.load(bf)
+                entries = [e for e in entries if isinstance(e, dict) and e.get("ip") != ip_addr]
+                with open(banned_ips_file, "w", encoding="utf-8") as bf:
+                    json.dump(entries, bf, indent=2)
+            except Exception:
+                pass
+
+        try:
+            container = client.containers.get(f"ourcraft_{srv.name}")
+            if container.status == "running":
+                container.exec_run(f"rcon-cli pardon-ip {ip_addr}")
+        except Exception:
+            pass
+
+    return {"status": "success", "message": f"L'adresse IP {ip_addr} a été débloquée."}
+
+
+@app.post("/api/security/lockdown")
+async def toggle_global_lockdown(payload: LockdownRequest, db: AsyncSession = Depends(get_db)):
+    """Active ou désactive le Mode Bouclier d'Urgence (Whitelist forcée sur tous les serveurs)"""
+    res_servers = await db.execute(select(MinecraftServer))
+    servers = res_servers.scalars().all()
+    client = docker.from_env()
+
+    val_str = "true" if payload.enabled else "false"
+    rcon_cmd = "whitelist on" if payload.enabled else "whitelist off"
+
+    for srv in servers:
+        props_path = os.path.join(srv.path, "server.properties")
+        try:
+            update_properties_file(props_path, {"white-list": val_str})
+        except Exception:
+            pass
+
+        try:
+            container = client.containers.get(f"ourcraft_{srv.name}")
+            if container.status == "running":
+                container.exec_run(f"rcon-cli {rcon_cmd}")
+        except Exception:
+            pass
+
+    return {
+        "status": "success",
+        "lockdown_active": payload.enabled,
+        "message": (
+            "🛡️ Mode Bouclier d'Urgence ACTIVÉ : Whitelist forcée sur tous les serveurs !"
+            if payload.enabled
+            else "Mode Bouclier d'Urgence désactivé."
+        ),
+    }
+
 

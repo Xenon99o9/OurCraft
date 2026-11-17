@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useServerStore, type ImportCandidate } from '../store/useServerStore';
 import { useSettingsStore } from '../store/useSettingsStore';
+import { useAuthStore } from '../store/useAuthStore';
 
 const ENGINE_OPTIONS = [
   { id: 'PAPER', name: 'Paper', badge: 'Recommandé', desc: 'Ultra optimisé + Plugins Bukkit/Spigot' },
@@ -30,7 +31,11 @@ const RAM_PRESETS = ['1G', '2G', '4G', '6G', '8G', '12G'];
 export default function Home() {
   const { servers, isLoading, fetchServers, createServer, fetchImportCandidates, importServers } = useServerStore();
   const { settings, fetchSettings } = useSettingsStore();
+  const { user, logout, hasPermission } = useAuthStore();
   const navigate = useNavigate();
+
+  const isAdmin = user?.role === 'admin';
+  const visibleServers = servers.filter((s) => hasPermission(s.name, 'view'));
 
   // --- ÉTATS MODALE CRÉATION ---
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -143,51 +148,87 @@ export default function Home() {
       {/* HEADER PRINCIPAL */}
       <header className="mb-8 flex flex-col lg:flex-row lg:items-center justify-between border-b border-[#1E1F22] pb-6 gap-4">
         <div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-3xl font-extrabold text-white tracking-tight">OurCraft</h1>
             <span className="bg-[#5865F2]/20 text-[#8EA1E1] border border-[#5865F2]/30 text-xs font-bold px-2.5 py-0.5 rounded-full">
               V2 Panel
             </span>
+            {user && (
+              <span className="bg-[#2B2D31] border border-[#1E1F22] text-gray-200 text-xs px-3 py-1 rounded-full flex items-center gap-1.5">
+                <span>{isAdmin ? '👑' : '👤'}</span>
+                <span className="font-semibold">{user.username}</span>
+                <button
+                  onClick={logout}
+                  className="ml-2 text-gray-400 hover:text-[#DA373C] font-medium"
+                  title="Se déconnecter"
+                >
+                  Déconnexion
+                </button>
+              </span>
+            )}
           </div>
-          <div className="flex flex-wrap items-center gap-2 mt-2 text-sm text-gray-400">
-            <span>Répertoire des serveurs :</span>
-            <button
-              onClick={() => navigate('/settings')}
-              className="font-mono text-xs bg-[#2B2D31] hover:bg-[#1E1F22] text-gray-200 px-2.5 py-1 rounded-md border border-[#1E1F22] transition-colors flex items-center gap-1.5"
-              title="Cliquer pour changer le dossier des serveurs"
-            >
-              <span>📁 {settings.base_path || 'Chargement...'}</span>
-              <span className="text-[#5865F2] font-sans font-medium">Modifier</span>
-            </button>
-          </div>
+          {isAdmin && (
+            <div className="flex flex-wrap items-center gap-2 mt-2 text-sm text-gray-400">
+              <span>Répertoire des serveurs :</span>
+              <button
+                onClick={() => navigate('/settings')}
+                className="font-mono text-xs bg-[#2B2D31] hover:bg-[#1E1F22] text-gray-200 px-2.5 py-1 rounded-md border border-[#1E1F22] transition-colors flex items-center gap-1.5"
+                title="Cliquer pour changer le dossier des serveurs"
+              >
+                <span>📁 {settings.base_path || 'Chargement...'}</span>
+                <span className="text-[#5865F2] font-sans font-medium">Modifier</span>
+              </button>
+            </div>
+          )}
         </div>
 
         {/* BARRE DE BOUTONS D'ACTION */}
-        <div className="flex flex-wrap items-center gap-2.5">
-          <button
-            onClick={openCreateModal}
-            className="bg-[#23A559] hover:bg-[#1D8B4A] text-white px-5 py-2.5 rounded-lg font-semibold transition-colors shadow-md flex items-center gap-2 text-sm"
-          >
-            <span>＋</span>
-            <span>Nouveau Serveur</span>
-          </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {isAdmin && (
+            <>
+              <button
+                onClick={openCreateModal}
+                className="bg-[#23A559] hover:bg-[#1D8B4A] text-white px-4 py-2.5 rounded-lg font-semibold transition-colors shadow-md flex items-center gap-1.5 text-sm"
+              >
+                <span>＋</span>
+                <span>Nouveau Serveur</span>
+              </button>
 
-          <button
-            onClick={openImportModal}
-            className="bg-[#2B2D31] hover:bg-[#35373C] border border-[#1E1F22] text-white px-4 py-2.5 rounded-lg font-medium transition-colors shadow-sm flex items-center gap-2 text-sm"
-          >
-            <span>📥</span>
-            <span>Importer</span>
-          </button>
+              <button
+                onClick={openImportModal}
+                className="bg-[#2B2D31] hover:bg-[#35373C] border border-[#1E1F22] text-white px-3.5 py-2.5 rounded-lg font-medium transition-colors shadow-sm flex items-center gap-1.5 text-sm"
+              >
+                <span>📥</span>
+                <span>Importer</span>
+              </button>
 
-          <button
-            onClick={() => navigate('/settings')}
-            className="bg-[#2B2D31] hover:bg-[#35373C] border border-[#1E1F22] text-gray-200 px-4 py-2.5 rounded-lg font-medium transition-colors shadow-sm flex items-center gap-2 text-sm"
-            title="Paramètres globaux de l'application"
-          >
-            <span>⚙️</span>
-            <span>Paramètres</span>
-          </button>
+              <button
+                onClick={() => navigate('/security')}
+                className="bg-[#2B2D31] hover:bg-[#35373C] border border-[#1E1F22] text-amber-300 px-3.5 py-2.5 rounded-lg font-medium transition-colors shadow-sm flex items-center gap-1.5 text-sm"
+                title="Bouclier Réseau & Anti-Attaques"
+              >
+                <span>🛡️</span>
+                <span>Bouclier</span>
+              </button>
+
+              <button
+                onClick={() => navigate('/users')}
+                className="bg-[#2B2D31] hover:bg-[#35373C] border border-[#1E1F22] text-gray-200 px-3.5 py-2.5 rounded-lg font-medium transition-colors shadow-sm flex items-center gap-1.5 text-sm"
+                title="Gestion des comptes & droits par serveur"
+              >
+                <span>👥</span>
+                <span>Comptes</span>
+              </button>
+
+              <button
+                onClick={() => navigate('/settings')}
+                className="bg-[#2B2D31] hover:bg-[#35373C] border border-[#1E1F22] text-gray-200 px-3.5 py-2.5 rounded-lg font-medium transition-colors shadow-sm flex items-center gap-1.5 text-sm"
+                title="Paramètres globaux de l'application"
+              >
+                <span>⚙️</span>
+              </button>
+            </>
+          )}
 
           <button
             onClick={fetchServers}
@@ -561,30 +602,34 @@ export default function Home() {
         <div className="flex justify-center items-center h-40">
           <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-[#5865F2]"></div>
         </div>
-      ) : servers.length === 0 ? (
+      ) : visibleServers.length === 0 ? (
         <div className="text-center text-gray-400 mt-16 bg-[#2B2D31] p-10 rounded-xl border border-[#1E1F22]">
           <p className="text-xl font-bold text-white mb-2">Aucun serveur dans votre tableau de bord</p>
           <p className="text-sm text-gray-400 mb-6 max-w-md mx-auto">
-            Créez un nouveau serveur configuré sur mesure ou importez vos dossiers de serveurs existants en un clic.
+            {isAdmin
+              ? 'Créez un nouveau serveur configuré sur mesure ou importez vos dossiers de serveurs existants en un clic.'
+              : "Aucun serveur n'a encore été attribué à votre sous-compte par l'administrateur."}
           </p>
-          <div className="flex flex-wrap justify-center gap-3">
-            <button
-              onClick={openCreateModal}
-              className="bg-[#23A559] hover:bg-[#1D8B4A] text-white px-5 py-2.5 rounded-lg font-semibold transition-colors text-sm"
-            >
-              ＋ Nouveau Serveur
-            </button>
-            <button
-              onClick={openImportModal}
-              className="bg-[#5865F2] hover:bg-[#4752C4] text-white px-5 py-2.5 rounded-lg font-semibold transition-colors text-sm"
-            >
-              📥 Importer des serveurs existants
-            </button>
-          </div>
+          {isAdmin && (
+            <div className="flex flex-wrap justify-center gap-3">
+              <button
+                onClick={openCreateModal}
+                className="bg-[#23A559] hover:bg-[#1D8B4A] text-white px-5 py-2.5 rounded-lg font-semibold transition-colors text-sm"
+              >
+                ＋ Nouveau Serveur
+              </button>
+              <button
+                onClick={openImportModal}
+                className="bg-[#5865F2] hover:bg-[#4752C4] text-white px-5 py-2.5 rounded-lg font-semibold transition-colors text-sm"
+              >
+                📥 Importer des serveurs existants
+              </button>
+            </div>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-          {servers.map((server) => {
+          {visibleServers.map((server) => {
             const isOnline = server.status.includes('running');
             return (
               <div
