@@ -224,8 +224,9 @@ export default function ServerPanel() {
   // --- ÉTATS ONGLET PARAMÈTRES ---
   const [portInput, setPortInput] = useState<number>(25565);
   const [ramInput, setRamInput] = useState<string>('2G');
-  const [typeInput, setTypeInput] = useState<string>('PAPER');
+  const [typeInput, setTypeInput] = useState<string>('VANILLA');
   const [versionInput, setVersionInput] = useState<string>('LATEST');
+  const [backupBeforeConvert, setBackupBeforeConvert] = useState<boolean>(true);
   const [isSavingDocker, setIsSavingDocker] = useState(false);
   const [dockerFeedback, setDockerFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
@@ -719,6 +720,7 @@ export default function ServerPanel() {
       ram: ramInput,
       server_type: typeInput,
       version: versionInput,
+      backup_before_convert: backupBeforeConvert,
     });
 
     setDockerFeedback({
@@ -2322,6 +2324,31 @@ export default function ServerPanel() {
                   </div>
                 </div>
               </div>
+
+              {typeInput !== (server.server_type || 'VANILLA') && (
+                <div className="mt-5 p-4 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div>
+                    <div className="font-bold text-sm flex items-center gap-2">
+                      <span>🔄</span>
+                      <span>
+                        Conversion de moteur détectée : {server.server_type || 'VANILLA'} → {typeInput}
+                      </span>
+                    </div>
+                    <p className="text-xs text-amber-100/80 mt-1">
+                      OurCraft va automatiquement adapter la structure de vos dimensions (Nether <code className="font-mono">DIM-1</code> & End <code className="font-mono">DIM1</code>) et remplacer l'exécutable du serveur sans perdre votre monde.
+                    </p>
+                  </div>
+                  <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer shrink-0 bg-[#1E1F22] px-3 py-2 rounded-lg border border-amber-500/30">
+                    <input
+                      type="checkbox"
+                      checked={backupBeforeConvert}
+                      onChange={(e) => setBackupBeforeConvert(e.target.checked)}
+                      className="w-4 h-4 accent-[#23A559] rounded"
+                    />
+                    <span>Créer un Snapshot .zip avant conversion</span>
+                  </label>
+                </div>
+              )}
             </form>
 
             <form

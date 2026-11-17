@@ -19,6 +19,7 @@ export interface ServerSettingsPayload {
   ram: string
   server_type: string
   version: string
+  backup_before_convert?: boolean
 }
 
 export interface CreateServerPayload {
@@ -26,6 +27,7 @@ export interface CreateServerPayload {
   server_type: string
   version: string
   ram: string
+  port?: number
 }
 
 export interface ImportCandidate {
@@ -34,6 +36,8 @@ export interface ImportCandidate {
   already_imported: boolean
   is_minecraft_dir: boolean
   detected_port: number | null
+  detected_type?: string
+  detected_version?: string
 }
 
 interface ServerStore {
@@ -46,7 +50,11 @@ interface ServerStore {
   createServer: (payload: CreateServerPayload) => Promise<{ ok: boolean; message: string }>
   updateServerSettings: (serverName: string, settings: ServerSettingsPayload) => Promise<{ ok: boolean; message: string }>
   fetchImportCandidates: (basePath?: string) => Promise<{ base_path: string; exists: boolean; candidates: ImportCandidate[] }>
-  importServers: (basePath: string, selectedFolders: string[]) => Promise<{ ok: boolean; message: string; added: number }>
+  importServers: (
+    basePath: string,
+    selectedFolders: string[],
+    engineOverrides?: Record<string, string>
+  ) => Promise<{ ok: boolean; message: string; added: number }>
 }
 
 export const useServerStore = create<ServerStore>((set, get) => ({
@@ -177,14 +185,15 @@ export const useServerStore = create<ServerStore>((set, get) => ({
     return { base_path: basePath || '', exists: false, candidates: [] }
   },
 
-  importServers: async (basePath, selectedFolders) => {
+  importServers: async (basePath, selectedFolders, engineOverrides) => {
     try {
       const response = await fetch(`${API_BASE}/api/servers/scan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           base_path: basePath,
-          selected_folders: selectedFolders
+          selected_folders: selectedFolders,
+          engine_overrides: engineOverrides
         })
       })
       const data = await response.json()

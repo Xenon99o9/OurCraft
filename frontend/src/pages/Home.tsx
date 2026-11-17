@@ -5,13 +5,13 @@ import { useSettingsStore } from '../store/useSettingsStore';
 import { useAuthStore } from '../store/useAuthStore';
 
 const ENGINE_OPTIONS = [
-  { id: 'PAPER', name: 'Paper', badge: 'Recommandé', desc: 'Ultra optimisé + Plugins Bukkit/Spigot' },
-  { id: 'FABRIC', name: 'Fabric', badge: 'Mods légers', desc: 'Idéal pour les mods modernes & perf' },
-  { id: 'FORGE', name: 'Forge', badge: 'Mods', desc: 'Le grand classique pour les modpacks' },
-  { id: 'NEOFORGE', name: 'NeoForge', badge: 'Mods 1.20+', desc: 'Successeur moderne de Forge' },
-  { id: 'VANILLA', name: 'Vanilla', badge: 'Officiel', desc: 'Serveur officiel Mojang non modifié' },
-  { id: 'PURPUR', name: 'Purpur', badge: 'Plugins+', desc: 'Fork de Paper hautement configurable' },
-  { id: 'SPIGOT', name: 'Spigot', badge: 'Plugins', desc: 'Moteur de plugins classique' },
+  { id: 'VANILLA', name: 'Vanilla Classique', badge: 'Officiel Mojang', desc: 'Serveur Minecraft officiel pur, sans modification' },
+  { id: 'PAPER', name: 'Paper', badge: 'Optimisé + Plugins', desc: 'Haute performance + support des plugins Bukkit/Spigot' },
+  { id: 'FABRIC', name: 'Fabric', badge: 'Mods légers', desc: 'Idéal pour les mods modernes et les performances' },
+  { id: 'FORGE', name: 'Forge', badge: 'Mods classiques', desc: 'Le grand classique pour les modpacks complets' },
+  { id: 'NEOFORGE', name: 'NeoForge', badge: 'Mods 1.20+', desc: 'Successeur moderne de Forge pour les versions récentes' },
+  { id: 'PURPUR', name: 'Purpur', badge: 'Paper+', desc: 'Fork de Paper avec options de gameplay avancées' },
+  { id: 'SPIGOT', name: 'Spigot', badge: 'Plugins', desc: 'Moteur de plugins historique' },
 ];
 
 const VERSION_PRESETS = [
@@ -40,10 +40,11 @@ export default function Home() {
   // --- ÉTATS MODALE CRÉATION ---
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newServerName, setNewServerName] = useState('');
-  const [selectedType, setSelectedType] = useState('PAPER');
+  const [selectedType, setSelectedType] = useState('VANILLA');
   const [selectedVersion, setSelectedVersion] = useState('LATEST');
   const [customVersionMode, setCustomVersionMode] = useState(false);
   const [selectedRam, setSelectedRam] = useState('2G');
+  const [selectedPort, setSelectedPort] = useState<number>(25565);
   const [isCreating, setIsCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -52,6 +53,7 @@ export default function Home() {
   const [importPath, setImportPath] = useState('');
   const [candidates, setCandidates] = useState<ImportCandidate[]>([]);
   const [selectedFolders, setSelectedFolders] = useState<string[]>([]);
+  const [engineOverrides, setEngineOverrides] = useState<Record<string, string>>({});
   const [isLoadingCandidates, setIsLoadingCandidates] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [importFeedback, setImportFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -61,13 +63,25 @@ export default function Home() {
     fetchSettings();
   }, [fetchServers, fetchSettings]);
 
+  // Calcule le prochain port libre dans la plage configurée (port_min -> port_max)
+  const computeNextFreePort = () => {
+    const used = new Set(servers.map((s) => s.port));
+    const minP = settings.port_min || 25565;
+    const maxP = settings.port_max || 25575;
+    for (let p = minP; p <= maxP; p++) {
+      if (!used.has(p)) return p;
+    }
+    return minP;
+  };
+
   // --- LOGIQUE CRÉATION ---
   const openCreateModal = () => {
     setNewServerName('');
-    setSelectedType('PAPER');
+    setSelectedType('VANILLA');
     setSelectedVersion('LATEST');
     setCustomVersionMode(false);
     setSelectedRam('2G');
+    setSelectedPort(computeNextFreePort());
     setCreateError(null);
     setShowCreateModal(true);
   };
@@ -85,6 +99,7 @@ export default function Home() {
       server_type: selectedType,
       version: selectedVersion.trim() || 'LATEST',
       ram: selectedRam.trim() || '2G',
+      port: Number(selectedPort),
     });
 
     if (res.ok) {
@@ -102,6 +117,12 @@ export default function Home() {
     const data = await fetchImportCandidates(targetPath);
     setImportPath(data.base_path);
     setCandidates(data.candidates);
+
+    const initialOverrides: Record<string, string> = {};
+    for (const c of data.candidates) {
+      initialOverrides[c.name] = c.detected_type || 'VANILLA';
+    }
+    setEngineOverrides(initialOverrides);
 
     // Pré-cocher automatiquement les dossiers détectés comme de vrais serveurs Minecraft non encore importés
     const autoSelected = data.candidates
@@ -128,7 +149,7 @@ export default function Home() {
     if (selectedFolders.length === 0) return;
     setIsImporting(true);
     setImportFeedback(null);
-    const res = await importServers(importPath, selectedFolders);
+    const res = await importServers(importPath, selectedFolders, engineOverrides);
     setIsImporting(false);
     if (res.ok) {
       setImportFeedback({ type: 'success', text: res.message });
@@ -142,6 +163,7 @@ export default function Home() {
   };
 
   const availableCandidates = candidates.filter((c) => !c.already_imported);
+  const nextSuggestedPort = computeNextFreePort();
 
   return (
     <div className="p-6 md:p-8 max-w-6xl mx-auto relative">
@@ -241,16 +263,16 @@ export default function Home() {
       </header>
 
       {/* ========================================================= */}
-      {/* MODALE 1 : CRÉER UN NOUVEAU SERVEUR (TYPE, VERSION, RAM)  */}
+      {/* MODALE 1 : CRÉER UN NOUVEAU SERVEUR                       */}
       {/* ========================================================= */}
       {showCreateModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-[#2B2D31] rounded-2xl border border-[#1E1F22] shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
+          <div className="bg-[#2B2D31] rounded-2xl border border-[#1E1F22] shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[92vh]">
             <div className="p-6 bg-[#1E1F22] border-b border-[#2B2D31] flex items-center justify-between">
               <div>
                 <h2 className="text-xl font-bold text-white">Créer un nouveau serveur Minecraft</h2>
                 <p className="text-gray-400 text-xs mt-1">
-                  Choisissez le nom, le moteur (Paper, Forge, Fabric, Vanilla...) et la version précise dès la création.
+                  Choisissez le moteur (Vanilla Classique, Paper, Forge, Fabric...), la version, la RAM et le port.
                 </p>
               </div>
               <button
@@ -261,39 +283,68 @@ export default function Home() {
               </button>
             </div>
 
-            <form onSubmit={handleCreate} className="p-6 overflow-y-auto space-y-6">
+            <form onSubmit={handleCreate} className="p-6 overflow-y-auto space-y-5">
               {createError && (
                 <div className="p-3.5 rounded-lg bg-[#DA373C]/15 border border-[#DA373C]/50 text-[#DA373C] text-sm">
                   {createError}
                 </div>
               )}
 
-              {/* 1. Nom du serveur */}
-              <div>
-                <label className="block text-xs font-bold text-gray-300 uppercase tracking-wider mb-2">
-                  1. Nom du serveur
-                </label>
-                <input
-                  type="text"
-                  value={newServerName}
-                  onChange={(e) => setNewServerName(e.target.value)}
-                  placeholder="ex: survie-entre-amis"
-                  className="w-full bg-[#1E1F22] text-white border border-[#111214] rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-[#5865F2]"
-                  required
-                  autoFocus
-                />
-                <p className="text-xs text-gray-500 mt-1.5">
-                  Dossier créé automatiquement :{' '}
-                  <code className="text-gray-400">
-                    {settings.base_path}/{newServerName.trim().toLowerCase().replace(/\s+/g, '-') || 'mon-serveur'}
-                  </code>
-                </p>
+              {/* 1. Nom et Port */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="sm:col-span-2">
+                  <label className="block text-xs font-bold text-gray-300 uppercase tracking-wider mb-2">
+                    1. Nom du serveur
+                  </label>
+                  <input
+                    type="text"
+                    value={newServerName}
+                    onChange={(e) => setNewServerName(e.target.value)}
+                    placeholder="ex: survie-vanilla"
+                    className="w-full bg-[#1E1F22] text-white border border-[#111214] rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-[#5865F2]"
+                    required
+                    autoFocus
+                  />
+                  <p className="text-xs text-gray-500 mt-1 truncate">
+                    Dossier :{' '}
+                    <code className="text-gray-400">
+                      {settings.base_path}/{newServerName.trim().toLowerCase().replace(/\s+/g, '-') || 'mon-serveur'}
+                    </code>
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-300 uppercase tracking-wider mb-2">
+                    2. Port d'écoute
+                  </label>
+                  <input
+                    type="number"
+                    min={1024}
+                    max={65535}
+                    value={selectedPort}
+                    onChange={(e) => setSelectedPort(Number(e.target.value))}
+                    className="w-full bg-[#1E1F22] text-white border border-[#111214] rounded-lg px-3.5 py-2.5 font-mono text-sm focus:outline-none focus:border-[#5865F2]"
+                    required
+                  />
+                  <div className="flex items-center justify-between text-[11px] text-gray-400 mt-1">
+                    <span>Prochain libre : {nextSuggestedPort}</span>
+                    {selectedPort !== nextSuggestedPort && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedPort(nextSuggestedPort)}
+                        className="text-[#5865F2] hover:underline"
+                      >
+                        Reset
+                      </button>
+                    )}
+                  </div>
+                </div>
               </div>
 
-              {/* 2. Choix du Type / Moteur */}
+              {/* 3. Choix du Type / Moteur */}
               <div>
                 <label className="block text-xs font-bold text-gray-300 uppercase tracking-wider mb-2">
-                  2. Type / Moteur du serveur
+                  3. Type / Moteur du serveur (convertible à tout moment par la suite)
                 </label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                   {ENGINE_OPTIONS.map((eng) => {
@@ -326,11 +377,11 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* 3. Version de Minecraft & RAM */}
+              {/* 4. Version de Minecraft & RAM */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
                 <div>
                   <label className="block text-xs font-bold text-gray-300 uppercase tracking-wider mb-2">
-                    3. Version de Minecraft
+                    4. Version de Minecraft
                   </label>
                   <div className="space-y-2">
                     <select
@@ -348,7 +399,7 @@ export default function Home() {
                     >
                       {VERSION_PRESETS.map((v) => (
                         <option key={v} value={v}>
-                          {v === 'LATEST' ? 'LATEST (Dernière version stable)' : `Minecraft ${v}`}
+                          {v === 'LATEST' ? 'LATEST (Dernière version officielle)' : `Minecraft ${v}`}
                         </option>
                       ))}
                       <option value="CUSTOM">Autre version précise...</option>
@@ -369,7 +420,7 @@ export default function Home() {
 
                 <div>
                   <label className="block text-xs font-bold text-gray-300 uppercase tracking-wider mb-2">
-                    4. RAM allouée au conteneur
+                    5. RAM allouée au conteneur
                   </label>
                   <div className="flex flex-wrap gap-1.5 mb-2">
                     {RAM_PRESETS.map((ram) => (
@@ -411,7 +462,9 @@ export default function Home() {
                   disabled={isCreating}
                   className="bg-[#23A559] hover:bg-[#1D8B4A] disabled:opacity-50 text-white px-6 py-2.5 rounded-lg font-semibold text-sm transition-colors shadow-md"
                 >
-                  {isCreating ? 'Création en cours...' : `Créer le serveur (${selectedType} ${selectedVersion})`}
+                  {isCreating
+                    ? 'Création en cours...'
+                    : `Créer (${selectedType} ${selectedVersion} • Port ${selectedPort})`}
                 </button>
               </div>
             </form>
@@ -420,7 +473,7 @@ export default function Home() {
       )}
 
       {/* ========================================================= */}
-      {/* MODALE 2 : MENU D'IMPORTATION DÉDIÉ                       */}
+      {/* MODALE 2 : MENU D'IMPORTATION DÉDIÉ + CONVERSION          */}
       {/* ========================================================= */}
       {showImportModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
@@ -429,10 +482,10 @@ export default function Home() {
               <div>
                 <h2 className="text-xl font-bold text-white flex items-center gap-2">
                   <span>📥</span>
-                  <span>Importer des serveurs existants</span>
+                  <span>Importer ou Convertir des serveurs existants</span>
                 </h2>
                 <p className="text-gray-400 text-xs mt-1">
-                  Sélectionnez uniquement les dossiers de serveurs que vous souhaitez ajouter à OurCraft.
+                  OurCraft détecte automatiquement le moteur de chaque dossier (Vanilla, Paper, Forge...) et vous permet même de le convertir à l'importation.
                 </p>
               </div>
               <button
@@ -515,35 +568,44 @@ export default function Home() {
                     Aucun sous-dossier trouvé dans <code className="text-gray-300">{importPath}</code>.
                   </div>
                 ) : (
-                  <div className="bg-[#1E1F22] rounded-xl border border-[#111214] divide-y divide-[#2B2D31] max-h-64 overflow-y-auto">
+                  <div className="bg-[#1E1F22] rounded-xl border border-[#111214] divide-y divide-[#2B2D31] max-h-72 overflow-y-auto">
                     {candidates.map((cand) => {
                       const isChecked = selectedFolders.includes(cand.name);
+                      const detectedEngine = cand.detected_type || 'VANILLA';
+                      const targetEngine = engineOverrides[cand.name] || detectedEngine;
+                      const isConverting = targetEngine !== detectedEngine;
+
                       return (
                         <div
                           key={cand.path}
-                          onClick={() => {
-                            if (!cand.already_imported) toggleFolderSelection(cand.name);
-                          }}
-                          className={`p-3.5 flex items-center justify-between transition-colors ${
-                            cand.already_imported
-                              ? 'opacity-50 cursor-not-allowed'
-                              : 'cursor-pointer hover:bg-[#2B2D31]/60'
+                          className={`p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${
+                            cand.already_imported ? 'opacity-50' : 'hover:bg-[#2B2D31]/60'
                           }`}
                         >
-                          <div className="flex items-center gap-3 min-w-0">
+                          <div
+                            onClick={() => {
+                              if (!cand.already_imported) toggleFolderSelection(cand.name);
+                            }}
+                            className="flex items-center gap-3 min-w-0 cursor-pointer flex-grow"
+                          >
                             <input
                               type="checkbox"
                               checked={cand.already_imported ? true : isChecked}
                               disabled={cand.already_imported}
                               onChange={() => {}}
-                              className="w-4 h-4 accent-[#5865F2] rounded cursor-pointer"
+                              className="w-4 h-4 accent-[#5865F2] rounded cursor-pointer shrink-0"
                             />
                             <div className="min-w-0">
-                              <div className="font-semibold text-sm text-white truncate flex items-center gap-2">
+                              <div className="font-semibold text-sm text-white truncate flex flex-wrap items-center gap-2">
                                 <span>📁 {cand.name}</span>
                                 {cand.is_minecraft_dir && !cand.already_imported && (
                                   <span className="text-[10px] bg-[#23A559]/20 text-[#23A559] px-2 py-0.5 rounded-full font-medium">
-                                    Serveur Minecraft détecté
+                                    Détecté : {detectedEngine} ({cand.detected_version || 'LATEST'})
+                                  </span>
+                                )}
+                                {isConverting && !cand.already_imported && (
+                                  <span className="text-[10px] bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded-full font-bold">
+                                    🔄 Sera converti en {targetEngine}
                                   </span>
                                 )}
                               </div>
@@ -551,17 +613,35 @@ export default function Home() {
                             </div>
                           </div>
 
-                          <div className="shrink-0 ml-2">
+                          <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
                             {cand.already_imported ? (
                               <span className="text-xs bg-[#2B2D31] text-gray-400 px-2.5 py-1 rounded-full">
                                 Déjà importé
                               </span>
-                            ) : cand.detected_port ? (
-                              <span className="text-xs font-mono bg-[#2B2D31] text-gray-300 px-2.5 py-1 rounded">
-                                Port: {cand.detected_port}
-                              </span>
                             ) : (
-                              <span className="text-xs text-gray-500">Port auto</span>
+                              <>
+                                <select
+                                  value={targetEngine}
+                                  onChange={(e) =>
+                                    setEngineOverrides((prev) => ({ ...prev, [cand.name]: e.target.value }))
+                                  }
+                                  className="bg-[#2B2D31] text-white border border-[#111214] rounded-lg px-2.5 py-1 text-xs focus:outline-none focus:border-[#5865F2]"
+                                  title="Garder le moteur d'origine ou convertir ce serveur"
+                                >
+                                  {ENGINE_OPTIONS.map((eng) => (
+                                    <option key={eng.id} value={eng.id}>
+                                      {eng.id === detectedEngine
+                                        ? `${eng.id} (Origine)`
+                                        : `Convertir → ${eng.id}`}
+                                    </option>
+                                  ))}
+                                </select>
+                                {cand.detected_port ? (
+                                  <span className="text-xs font-mono bg-[#2B2D31] text-gray-300 px-2 py-1 rounded">
+                                    :{cand.detected_port}
+                                  </span>
+                                ) : null}
+                              </>
                             )}
                           </div>
                         </div>
@@ -652,7 +732,7 @@ export default function Home() {
                 </div>
                 <div className="flex flex-wrap gap-1.5 mb-3 text-xs font-mono">
                   <span className="bg-[#1E1F22] text-[#8EA1E1] px-2.5 py-0.5 rounded border border-[#111214] font-semibold">
-                    {server.server_type || 'PAPER'} {server.version || 'LATEST'}
+                    {server.server_type || 'VANILLA'} {server.version || 'LATEST'}
                   </span>
                   <span className="bg-[#1E1F22] text-gray-300 px-2.5 py-0.5 rounded border border-[#111214]">
                     RAM: {server.ram || '2G'}

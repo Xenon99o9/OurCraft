@@ -94,6 +94,7 @@ async def get_db():
 class ScanRequest(BaseModel):
     base_path: str
     selected_folders: Optional[list[str]] = None
+    engine_overrides: Optional[Dict[str, str]] = None
 
 class ServerLaunchConfig(BaseModel):
     name: str
@@ -108,6 +109,7 @@ class ServerSettingsUpdate(BaseModel):
     ram: str
     server_type: str
     version: str
+    backup_before_convert: Optional[bool] = True
 
 class ServerPropertiesUpdate(BaseModel):
     properties: Dict[str, str]
@@ -123,9 +125,10 @@ class AppSettings(BaseModel):
 
 class ServerCreateConfig(BaseModel):
     name: str
-    server_type: str = "PAPER"
+    server_type: str = "VANILLA"
     version: str = "LATEST"
     ram: str = "2G"
+    port: Optional[int] = None
 
 class AddonInstallRequest(BaseModel):
     project_id: str
@@ -291,6 +294,101 @@ async def get_minecraft_servers(db: AsyncSession = Depends(get_db)):
         
     return server_list
 
+def detect_server_engine_and_version(folder_path: str) -> tuple[str, str]:
+    """Détecte automatiquement le moteur (VANILLA, PAPER, FORGE, FABRIC...) et la version Minecraft d'un dossier existant"""
+    detected_type = None
+    detected_version = None
+
+    try:
+        entries = os.listdir(folder_path)
+    except Exception:
+        return ("VANILLA", "LATEST")
+
+    lower_entries = {e.lower(): e for e in entries}
+
+    # 1. Inspecter version_history.json (Paper / Purpur / Spigot)
+    vh_path = os.path.join(folder_path, "version_history.json")
+    if os.path.exists(vh_path):
+        try:
+            with open(vh_path, "r", encoding="utf-8", errors="replace") as f:
+                vh_text = f.read()
+            if "purpur" in vh_text.lower():
+                detected_type = "PURPUR"
+            elif "paper" in vh_text.lower():
+                detected_type = "PAPER"
+            m_ver = re.search(r"MC:\s*(1\.\d+(?:\.\d+)?)", vh_text)
+            if m_ver:
+                detected_version = m_ver.group(1)
+        except Exception:
+            pass
+
+    # 2. Inspecter les fichiers/dossiers caractéristiques
+    if not detected_type:
+        if ".fabric" in lower_entries or any(e.startswith("fabric-server") for e in lower_entries):
+            detected_type = "FABRIC"
+        elif os.path.exists(os.path.join(folder_path, "libraries", "net", "neoforged")) or any("neoforge" in e for e in lower_entries):
+            detected_type = "NEOFORGE"
+        elif os.path.exists(os.path.join(folder_path, "libraries", "net", "minecraftforge")) or any("forge" in e and e.endswith(".jar") for e in lower_entries):
+            detected_type = "FORGE"
+        elif "purpur.yml" in lower_entries or any(e.startswith("purpur") and e.endswith(".jar") for e in lower_entries):
+            detected_type = "PURPUR"
+        elif "paper.yml" in lower_entries or os.path.exists(os.path.join(folder_path, "config", "paper-global.yml")) or any(e.startswith("paper") and e.endswith(".jar") for e in lower_entries):
+            detected_type = "PAPER"
+        elif "spigot.yml" in lower_entries or any(e.startswith("spigot") and e.endswith(".jar") for e in lower_entries):
+            detected_type = "SPIGOT"
+
+    # 3. Inspecter le sous-dossier versions/ (créé par Vanilla / Paper 1.18+)
+    versions_dir = os.path.join(folder_path, "versions")
+    if not detected_version and os.path.isdir(versions_dir):
+        try:
+            for v_dir in sorted(os.listdir(versions_dir), reverse=True):
+                if re.match(r"^1\.\d+(?:\.\d+)?$", v_dir):
+                    detected_version = v_dir
+                    break
+        except Exception:
+            pass
+
+    # 4. Inspecter les noms de fichiers .jar à la racine
+    for e_low in lower_entries:
+        if e_low.endswith(".jar"):
+            m_jar_ver = re.search(r"(1\.\d+(?:\.\d+)?)", e_low)
+            if m_jar_ver and not detected_version:
+                detected_version = m_jar_ver.group(1)
+            if not detected_type:
+                if "vanilla" in e_low or "minecraft_server" in e_low or e_low == "server.jar":
+                    detected_type = "VANILLA"
+
+    # 5. Inspecter logs/latest.log en dernier recours
+    log_path = os.path.join(folder_path, "logs", "latest.log")
+    if os.path.exists(log_path) and (not detected_type or not detected_version):
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as lf:
+                head_lines = "".join([lf.readline() for _ in range(40)])
+            if not detected_version:
+                m_log_v = re.search(r"(?:minecraft server version|MC:|Minecraft)\s*(1\.\d+(?:\.\d+)?)", head_lines, re.IGNORECASE)
+                if m_log_v:
+                    detected_version = m_log_v.group(1)
+            if not detected_type:
+                hl = head_lines.lower()
+                if "paper" in hl:
+                    detected_type = "PAPER"
+                elif "fabric" in hl:
+                    detected_type = "FABRIC"
+                elif "neoforge" in hl:
+                    detected_type = "NEOFORGE"
+                elif "forge" in hl:
+                    detected_type = "FORGE"
+                elif "spigot" in hl:
+                    detected_type = "SPIGOT"
+                elif "default game type" in hl or "starting minecraft server" in hl:
+                    detected_type = "VANILLA"
+        except Exception:
+            pass
+
+    # Si aucune trace de Paper/Forge/Fabric/Spigot n'est présente, c'est un serveur VANILLA !
+    return (detected_type or "VANILLA", detected_version or "LATEST")
+
+
 @app.get("/api/servers/import/candidates")
 async def get_import_candidates(
     base_path: Optional[str] = Query(None, description="Dossier à analyser (par défaut le dossier configuré)"),
@@ -336,12 +434,16 @@ async def get_import_candidates(
                 except Exception:
                     pass
 
+            det_type, det_version = detect_server_engine_and_version(folder_path)
+
             candidates.append({
                 "name": folder_name,
                 "path": folder_path,
                 "already_imported": already_imported,
                 "is_minecraft_dir": has_properties or has_world,
                 "detected_port": detected_port,
+                "detected_type": det_type,
+                "detected_version": det_version,
             })
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Impossible de lire le dossier : {str(e)}")
@@ -421,6 +523,18 @@ async def scan_directories(request: ScanRequest, db: AsyncSession = Depends(get_
                         assigned_port = 25565
 
                     used_ports.add(assigned_port)
+                    det_type, det_version = detect_server_engine_and_version(folder_path)
+                    chosen_type = det_type
+                    if request.engine_overrides and folder_name in request.engine_overrides:
+                        chosen_type = request.engine_overrides[folder_name].strip().upper()
+                        if chosen_type != det_type:
+                            await asyncio.to_thread(
+                                prepare_engine_conversion_sync,
+                                folder_path,
+                                det_type,
+                                chosen_type,
+                                True
+                            )
 
                     new_server = MinecraftServer(
                         node_id=1,
@@ -428,8 +542,8 @@ async def scan_directories(request: ScanRequest, db: AsyncSession = Depends(get_
                         path=folder_path,
                         server_port=assigned_port,
                         ram="2G",
-                        server_type="PAPER",
-                        version="LATEST"
+                        server_type=chosen_type,
+                        version=det_version
                     )
                     db.add(new_server)
                     found_servers.append(folder_name)
@@ -505,7 +619,86 @@ async def stop_minecraft_server(server_name: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# --- ONGLET PARAMÈTRES : DOCKER & SERVER.PROPERTIES ---
+# --- ONGLET PARAMÈTRES : DOCKER, CONVERSION DE MOTEUR & SERVER.PROPERTIES ---
+
+BUKKIT_ENGINES = {"PAPER", "PURPUR", "SPIGOT"}
+VANILLA_OR_MODDED_ENGINES = {"VANILLA", "FABRIC", "FORGE", "NEOFORGE"}
+
+
+def prepare_engine_conversion_sync(
+    server_path: str,
+    old_type: str,
+    new_type: str,
+    create_backup: bool = True
+) -> list[str]:
+    """
+    Convertit proprement un serveur d'un moteur à un autre (ex: VANILLA <-> PAPER <-> FORGE/FABRIC) :
+    1. Crée un snapshot .zip automatique de sécurité avant conversion (si le dossier contient déjà des données).
+    2. Migre les dimensions Nether (DIM-1) et End (DIM1) entre le format Vanilla/Moddé (world/DIM-1)
+       et le format Paper/Spigot/Purpur (world_nether/DIM-1) pour ne jamais perdre les mondes.
+    3. Nettoie les anciens exécutables .jar de moteur à la racine afin qu'itzg/minecraft-server
+       télécharge proprement le nouveau moteur.
+    """
+    actions_done = []
+    if not os.path.exists(server_path):
+        return actions_done
+
+    old_t = (old_type or "VANILLA").upper()
+    new_t = (new_type or "PAPER").upper()
+
+    has_files = any(
+        e for e in os.listdir(server_path)
+        if e != ".ourcraft_backups" and not e.startswith(".")
+    )
+    if create_backup and has_files and old_t != new_t:
+        try:
+            b_info = _create_backup_zip_sync(server_path, f"avant-conversion-{old_t}-vers-{new_t}")
+            actions_done.append(f"Snapshot de sécurité créé ({b_info['name']})")
+        except Exception:
+            pass
+
+    world_dir = os.path.join(server_path, "world")
+    nether_bukkit = os.path.join(server_path, "world_nether", "DIM-1")
+    end_bukkit = os.path.join(server_path, "world_the_end", "DIM1")
+    nether_vanilla = os.path.join(world_dir, "DIM-1")
+    end_vanilla = os.path.join(world_dir, "DIM1")
+
+    # Cas 1 : Passage de PAPER / PURPUR / SPIGOT -> VANILLA / FORGE / FABRIC / NEOFORGE
+    if old_t in BUKKIT_ENGINES and new_t in VANILLA_OR_MODDED_ENGINES:
+        if os.path.exists(nether_bukkit) and not os.path.exists(nether_vanilla):
+            os.makedirs(world_dir, exist_ok=True)
+            shutil.move(nether_bukkit, nether_vanilla)
+            actions_done.append("Dimension Nether migrée (world_nether -> world/DIM-1)")
+        if os.path.exists(end_bukkit) and not os.path.exists(end_vanilla):
+            os.makedirs(world_dir, exist_ok=True)
+            shutil.move(end_bukkit, end_vanilla)
+            actions_done.append("Dimension The End migrée (world_the_end -> world/DIM1)")
+
+    # Cas 2 : Passage de VANILLA / FORGE / FABRIC -> PAPER / PURPUR / SPIGOT
+    elif old_t in VANILLA_OR_MODDED_ENGINES and new_t in BUKKIT_ENGINES:
+        if os.path.exists(nether_vanilla) and not os.path.exists(nether_bukkit):
+            os.makedirs(os.path.dirname(nether_bukkit), exist_ok=True)
+            shutil.move(nether_vanilla, nether_bukkit)
+            actions_done.append("Dimension Nether adaptée pour Paper/Spigot (world/DIM-1 -> world_nether)")
+        if os.path.exists(end_vanilla) and not os.path.exists(end_bukkit):
+            os.makedirs(os.path.dirname(end_bukkit), exist_ok=True)
+            shutil.move(end_vanilla, end_bukkit)
+            actions_done.append("Dimension The End adaptée pour Paper/Spigot (world/DIM1 -> world_the_end)")
+
+    # 3. Nettoyage des anciens fichiers .jar de serveur à la racine pour forcer le téléchargement du nouveau moteur
+    if old_t != new_t:
+        for entry in os.scandir(server_path):
+            if entry.is_file() and entry.name.endswith(".jar"):
+                low = entry.name.lower()
+                if any(k in low for k in ("paper", "purpur", "spigot", "minecraft_server", "server.jar", "fabric-server", "forge", "neoforge")):
+                    try:
+                        os.remove(entry.path)
+                        actions_done.append(f"Ancien binaire {entry.name} retiré")
+                    except Exception:
+                        pass
+
+    return actions_done
+
 
 @app.put("/api/servers/{server_name}/settings")
 async def update_server_settings(
@@ -513,7 +706,7 @@ async def update_server_settings(
     settings: ServerSettingsUpdate,
     db: AsyncSession = Depends(get_db)
 ):
-    """Modifie port, RAM, type et version du serveur, met à jour la BDD et recrée le conteneur si nécessaire"""
+    """Modifie port, RAM, type et version du serveur, convertit le moteur si changé et recrée le conteneur"""
     server = await get_server_or_404(server_name, db)
 
     # Vérifier si le nouveau port est déjà pris par un autre serveur
@@ -527,9 +720,39 @@ async def update_server_settings(
         if res.scalars().first():
             raise HTTPException(status_code=400, detail=f"Le port {settings.port} est déjà utilisé par un autre serveur.")
 
+    old_type = (getattr(server, "server_type", "VANILLA") or "VANILLA").strip().upper()
+    new_type = settings.server_type.strip().upper()
+
+    # Si un conteneur tourne, on l'arrête avant de convertir les fichiers ou de le recréer
+    client = docker.from_env()
+    container_name = f"ourcraft_{server_name}"
+    was_running = False
+    try:
+        old_container = client.containers.get(container_name)
+        was_running = old_container.status == "running"
+        if was_running:
+            old_container.exec_run("rcon-cli save-all")
+            await asyncio.sleep(1)
+            old_container.stop(timeout=10)
+        old_container.remove()
+    except docker.errors.NotFound:
+        pass
+    except docker.errors.APIError as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de l'arrêt du conteneur Docker : {str(e)}")
+
+    conversion_notes = []
+    if old_type != new_type:
+        conversion_notes = await asyncio.to_thread(
+            prepare_engine_conversion_sync,
+            server.path,
+            old_type,
+            new_type,
+            bool(settings.backup_before_convert)
+        )
+
     server.server_port = settings.port
     server.ram = settings.ram.strip().upper()
-    server.server_type = settings.server_type.strip().upper()
+    server.server_type = new_type
     server.version = settings.version.strip()
 
     await db.commit()
@@ -543,33 +766,19 @@ async def update_server_settings(
         except Exception:
             pass
 
-    # Si un conteneur existe déjà, on le recrée pour que Docker prenne en compte le nouveau port et les nouvelles variables d'env
-    client = docker.from_env()
-    container_name = f"ourcraft_{server_name}"
-    was_running = False
-    try:
-        old_container = client.containers.get(container_name)
-        was_running = old_container.status == "running"
-        if was_running:
-            old_container.stop(timeout=10)
-        old_container.remove()
-    except docker.errors.NotFound:
-        pass
-    except docker.errors.APIError as e:
-        raise HTTPException(status_code=500, detail=f"Erreur lors de la mise à jour du conteneur Docker : {str(e)}")
-
     if was_running:
         try:
             create_server_container(client, server)
         except docker.errors.APIError as e:
             raise HTTPException(status_code=500, detail=f"Paramètres sauvegardés, mais erreur au redémarrage Docker : {str(e)}")
 
+    conv_msg = f" (Conversion {old_type} → {new_type} effectuée : {', '.join(conversion_notes)})" if conversion_notes else ""
     return {
         "status": "success",
         "message": (
-            "Paramètres appliqués et conteneur redémarré avec la nouvelle configuration !"
+            f"Paramètres appliqués et conteneur redémarré{conv_msg} !"
             if was_running
-            else "Paramètres sauvegardés ! Ils seront appliqués au prochain démarrage du serveur."
+            else f"Paramètres sauvegardés{conv_msg} ! Ils seront appliqués au prochain démarrage."
         ),
         "restarted": was_running,
     }
@@ -967,10 +1176,15 @@ async def create_minecraft_server(config_data: ServerCreateConfig, db: AsyncSess
     used_ports = {p for p in res.scalars().all()}
     
     available_port = None
-    for port in range(app_config["port_min"], app_config["port_max"] + 1):
-        if port not in used_ports:
-            available_port = port
-            break
+    if config_data.port is not None:
+        if config_data.port in used_ports:
+            raise HTTPException(status_code=400, detail=f"Le port {config_data.port} est déjà utilisé par un autre serveur.")
+        available_port = config_data.port
+    else:
+        for port in range(app_config["port_min"], app_config["port_max"] + 1):
+            if port not in used_ports:
+                available_port = port
+                break
             
     if not available_port:
         raise HTTPException(status_code=400, detail="Plus aucun port disponible dans la plage configurée.")
