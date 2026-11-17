@@ -27,8 +27,9 @@ import {
   UploadIcon,
 } from '../components/Icons';
 
-const API_BASE = `http://${window.location.hostname}:8000`;
-const WS_BASE = `ws://${window.location.hostname}:8000`;
+const API_BASE = '';
+const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+const WS_BASE = `${wsProtocol}//${window.location.host}`;
 
 type TabType =
   | 'console'

@@ -4,7 +4,7 @@ import { useServerStore } from '../store/useServerStore';
 import { type AuthUser, type ServerPermKey } from '../store/useAuthStore';
 import { ArrowLeftIcon, UsersIcon, CrownIcon, UserIcon, TrashIcon, ServerIcon } from '../components/Icons';
 
-const API_BASE = `http://${window.location.hostname}:8000`;
+const API_BASE = '';
 
 const PERM_LABELS: { key: ServerPermKey; label: string; desc: string }[] = [
   { key: 'view', label: 'Voir', desc: 'Accès au serveur' },

@@ -49,8 +49,10 @@ services:
       network: host
     container_name: panel_frontend
     restart: unless-stopped
+    environment:
+      VITE_PROXY_TARGET: http://panel_backend:8000
     ports:
-      - "5173:5173" # Port par défaut de Vite
+      - "5173:5173" # Port par défaut de Vite (modifiable librement à gauche, ex: 33333:5173)
     volumes:
       - ./frontend:/app # Hot Reload pour le front
       - /app/node_modules # Préserve les modules installés dans le conteneur

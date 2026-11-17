@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-const API_BASE = `http://${window.location.hostname}:8000`;
+const API_BASE = '';
 const TOKEN_KEY = 'ourcraft_auth_token';
 
 export type ServerPermKey = 'view' | 'power' | 'console' | 'addons' | 'files' | 'settings';
