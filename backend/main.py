@@ -60,6 +60,15 @@ async def ensure_db_schema():
                 await conn.execute(text(
                     "ALTER TABLE users ADD COLUMN IF NOT EXISTS theme VARCHAR(30) DEFAULT 'discord' NOT NULL;"
                 ))
+                await conn.execute(text(
+                    "ALTER TABLE minecraft_servers ADD COLUMN IF NOT EXISTS auto_stop_enabled BOOLEAN DEFAULT FALSE NOT NULL;"
+                ))
+                await conn.execute(text(
+                    "ALTER TABLE minecraft_servers ADD COLUMN IF NOT EXISTS auto_stop_minutes INTEGER DEFAULT 30 NOT NULL;"
+                ))
+                await conn.execute(text(
+                    "ALTER TABLE minecraft_servers ADD COLUMN IF NOT EXISTS max_backups INTEGER DEFAULT 5 NOT NULL;"
+                ))
             _db_initialized = True
             return
         except Exception as e:
@@ -114,6 +123,9 @@ class ServerSettingsUpdate(BaseModel):
     server_type: str
     version: str
     backup_before_convert: Optional[bool] = True
+    auto_stop_enabled: Optional[bool] = False
+    auto_stop_minutes: Optional[int] = 30
+    max_backups: Optional[int] = 5
 
 class ServerPropertiesUpdate(BaseModel):
     properties: Dict[str, str]
@@ -760,23 +772,32 @@ async def update_server_settings(
 
     old_type = (getattr(server, "server_type", "VANILLA") or "VANILLA").strip().upper()
     new_type = settings.server_type.strip().upper()
+    new_ram = settings.ram.strip().upper()
+    new_ver = settings.version.strip()
 
-    # Si un conteneur tourne, on l'arrête avant de convertir les fichiers ou de le recréer
+    docker_config_changed = (
+        settings.port != server.server_port
+        or new_ram != (getattr(server, "ram", "2G") or "2G").upper()
+        or new_type != old_type
+        or new_ver != (getattr(server, "version", "LATEST") or "LATEST")
+    )
+
     client = docker.from_env()
     container_name = f"ourcraft_{server_name}"
     was_running = False
-    try:
-        old_container = client.containers.get(container_name)
-        was_running = old_container.status == "running"
-        if was_running:
-            old_container.exec_run("rcon-cli save-all")
-            await asyncio.sleep(1)
-            old_container.stop(timeout=10)
-        old_container.remove()
-    except docker.errors.NotFound:
-        pass
-    except docker.errors.APIError as e:
-        raise HTTPException(status_code=500, detail=f"Erreur lors de l'arrêt du conteneur Docker : {str(e)}")
+    if docker_config_changed:
+        try:
+            old_container = client.containers.get(container_name)
+            was_running = old_container.status == "running"
+            if was_running:
+                old_container.exec_run("rcon-cli save-all")
+                await asyncio.sleep(1)
+                old_container.stop(timeout=10)
+            old_container.remove()
+        except docker.errors.NotFound:
+            pass
+        except docker.errors.APIError as e:
+            raise HTTPException(status_code=500, detail=f"Erreur lors de l'arrêt du conteneur Docker : {str(e)}")
 
     conversion_notes = []
     if old_type != new_type:
@@ -789,9 +810,15 @@ async def update_server_settings(
         )
 
     server.server_port = settings.port
-    server.ram = settings.ram.strip().upper()
+    server.ram = new_ram
     server.server_type = new_type
-    server.version = settings.version.strip()
+    server.version = new_ver
+    if settings.auto_stop_enabled is not None:
+        server.auto_stop_enabled = bool(settings.auto_stop_enabled)
+    if settings.auto_stop_minutes is not None:
+        server.auto_stop_minutes = max(1, int(settings.auto_stop_minutes))
+    if settings.max_backups is not None:
+        server.max_backups = max(1, int(settings.max_backups))
 
     await db.commit()
     await db.refresh(server)
@@ -804,7 +831,7 @@ async def update_server_settings(
         except Exception:
             pass
 
-    if was_running:
+    if docker_config_changed and was_running:
         try:
             create_server_container(client, server)
         except docker.errors.APIError as e:
@@ -1687,7 +1714,26 @@ async def delete_installed_addon(
 BACKUP_FOLDER_NAME = ".ourcraft_backups"
 
 
-def _create_backup_zip_sync(server_path: str, label: str) -> dict:
+def _enforce_backup_rotation_sync(backup_dir: str, max_backups: int = 5):
+    """Supprime automatiquement les plus anciennes archives .zip au-delà de la limite max_backups"""
+    if max_backups <= 0 or not os.path.exists(backup_dir):
+        return
+    zips = []
+    for entry in os.scandir(backup_dir):
+        if entry.is_file() and entry.name.endswith(".zip") and not entry.name.startswith("_"):
+            try:
+                zips.append((entry.stat().st_mtime, entry.path))
+            except Exception:
+                pass
+    zips.sort(key=lambda x: x[0], reverse=True)
+    for _, old_zip_path in zips[max_backups:]:
+        try:
+            os.remove(old_zip_path)
+        except Exception:
+            pass
+
+
+def _create_backup_zip_sync(server_path: str, label: str, max_backups: int = 5) -> dict:
     backup_dir = os.path.join(server_path, BACKUP_FOLDER_NAME)
     os.makedirs(backup_dir, exist_ok=True)
 
@@ -1709,6 +1755,7 @@ def _create_backup_zip_sync(server_path: str, label: str) -> dict:
                     pass
 
     stat = os.stat(zip_filepath)
+    _enforce_backup_rotation_sync(backup_dir, max_backups)
     return {
         "name": zip_filename,
         "size": stat.st_size,
@@ -1779,11 +1826,12 @@ async def create_server_backup(
     except Exception:
         pass
 
+    max_b = int(getattr(server, "max_backups", 5) or 5)
     try:
-        info = await asyncio.to_thread(_create_backup_zip_sync, server.path, payload.label or "snapshot")
+        info = await asyncio.to_thread(_create_backup_zip_sync, server.path, payload.label or "snapshot", max_b)
         return {
             "status": "success",
-            "message": f"Snapshot '{info['name']}' créé avec succès !",
+            "message": f"Snapshot '{info['name']}' créé avec succès (rotation automatique : {max_b} max) !",
             "backup": info,
         }
     except Exception as e:
@@ -1986,7 +2034,8 @@ async def execute_scheduled_action(task: ScheduledTask, db: AsyncSession):
                 await asyncio.sleep(1)
         except Exception:
             pass
-        await asyncio.to_thread(_create_backup_zip_sync, server.path, f"auto-{task.name}")
+        max_b = int(getattr(server, "max_backups", 5) or 5)
+        await asyncio.to_thread(_create_backup_zip_sync, server.path, f"auto-{task.name}", max_b)
 
     elif task.action_type == "command":
         try:
@@ -2017,8 +2066,55 @@ async def execute_scheduled_action(task: ScheduledTask, db: AsyncSession):
             create_server_container(client, server)
 
 
+_idle_since_by_server: Dict[str, float] = {}
+
+
+async def _check_auto_stop_idle_servers(session: AsyncSession):
+    """Vérifie les serveurs avec mise en veille automatique (Auto-Stop) activée et les arrête si 0 joueur depuis X min"""
+    res_srv = await session.execute(select(MinecraftServer).filter_by(auto_stop_enabled=True))
+    auto_servers = res_srv.scalars().all()
+    if not auto_servers:
+        return
+
+    client = docker.from_env()
+    now_ts = time.time()
+
+    for srv in auto_servers:
+        container_name = f"ourcraft_{srv.name}"
+        try:
+            container = client.containers.get(container_name)
+            if container.status != "running":
+                _idle_since_by_server.pop(srv.name, None)
+                continue
+
+            exec_res = container.exec_run("rcon-cli list")
+            clean_out = ANSI_ESCAPE_RE.sub("", exec_res.output.decode("utf-8", errors="replace")).strip()
+            m = re.search(r"There are (\d+)\s+(?:of a max of|/)\s*(\d+)\s+players online", clean_out, re.IGNORECASE)
+            if not m:
+                # Le serveur est peut-être encore en train de démarrer
+                continue
+
+            online_count = int(m.group(1))
+            if online_count > 0:
+                _idle_since_by_server.pop(srv.name, None)
+            else:
+                if srv.name not in _idle_since_by_server:
+                    _idle_since_by_server[srv.name] = now_ts
+                else:
+                    idle_mins = (now_ts - _idle_since_by_server[srv.name]) / 60.0
+                    target_mins = max(1, int(getattr(srv, "auto_stop_minutes", 30) or 30))
+                    if idle_mins >= target_mins:
+                        print(f"[Auto-Stop] Serveur '{srv.name}' inactif depuis {int(idle_mins)} min -> mise en veille.")
+                        container.exec_run("rcon-cli save-all")
+                        await asyncio.sleep(1)
+                        container.stop(timeout=10)
+                        _idle_since_by_server.pop(srv.name, None)
+        except Exception:
+            _idle_since_by_server.pop(srv.name, None)
+
+
 async def scheduler_background_loop():
-    """Boucle d'arrière-plan qui vérifie toutes les 25s si une tâche planifiée doit s'exécuter"""
+    """Boucle d'arrière-plan qui vérifie toutes les 25s les tâches Cron et la mise en veille automatique"""
     while True:
         try:
             await asyncio.sleep(25)
@@ -2030,6 +2126,8 @@ async def scheduler_background_loop():
             today_prefix = now.strftime("%Y-%m-%d")
 
             async with AsyncSessionLocal() as session:
+                await _check_auto_stop_idle_servers(session)
+
                 res = await session.execute(select(ScheduledTask).filter_by(enabled=True))
                 tasks = res.scalars().all()
 

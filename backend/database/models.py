@@ -25,6 +25,9 @@ class MinecraftServer(Base):
     ram: Mapped[str] = mapped_column(String(20), default="2G")
     server_type: Mapped[str] = mapped_column(String(50), default="PAPER")
     version: Mapped[str] = mapped_column(String(50), default="LATEST")
+    auto_stop_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_stop_minutes: Mapped[int] = mapped_column(Integer, default=30)
+    max_backups: Mapped[int] = mapped_column(Integer, default=5)
 
     # Relation inverse
     node = relationship("Node", back_populates="servers")

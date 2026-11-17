@@ -255,6 +255,9 @@ export default function ServerPanel() {
   const [typeInput, setTypeInput] = useState<string>('VANILLA');
   const [versionInput, setVersionInput] = useState<string>('LATEST');
   const [backupBeforeConvert, setBackupBeforeConvert] = useState<boolean>(true);
+  const [autoStopEnabled, setAutoStopEnabled] = useState<boolean>(false);
+  const [autoStopMinutes, setAutoStopMinutes] = useState<number>(30);
+  const [maxBackupsInput, setMaxBackupsInput] = useState<number>(5);
   const [isSavingDocker, setIsSavingDocker] = useState(false);
   const [dockerFeedback, setDockerFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
@@ -317,6 +320,9 @@ export default function ServerPanel() {
       setRamInput(server.ram || '2G');
       setTypeInput(server.server_type || 'PAPER');
       setVersionInput(server.version || 'LATEST');
+      setAutoStopEnabled(Boolean(server.auto_stop_enabled));
+      setAutoStopMinutes(server.auto_stop_minutes || 30);
+      setMaxBackupsInput(server.max_backups || 5);
     }
   }, [server]);
 
@@ -781,6 +787,9 @@ export default function ServerPanel() {
       server_type: typeInput,
       version: versionInput,
       backup_before_convert: backupBeforeConvert,
+      auto_stop_enabled: autoStopEnabled,
+      auto_stop_minutes: Number(autoStopMinutes) || 30,
+      max_backups: Number(maxBackupsInput) || 5,
     });
 
     setDockerFeedback({
@@ -2609,6 +2618,92 @@ export default function ServerPanel() {
                       className="w-full bg-[#1E1F22] text-white border border-[#111214] rounded-lg px-3 py-2.5 font-mono text-sm focus:outline-none focus:border-[#5865F2]"
                       required
                     />
+                  </div>
+                </div>
+              </div>
+
+              {/* Section Économie de ressources : Mise en veille automatique (Auto-Stop) & Rotation des Snapshots */}
+              <div className="mt-6 pt-5 border-t border-[#1E1F22] grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="bg-[#1E1F22] border border-[#111214] rounded-xl p-4 flex flex-col justify-between gap-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-bold text-white flex items-center gap-2">
+                        <ClockIcon className="w-4 h-4 text-[#8EA1E1]" />
+                        <span>Mise en veille automatique (Auto-Stop)</span>
+                      </div>
+                      <p className="text-xs text-gray-400 mt-0.5">
+                        Coupe proprement le serveur s'il y a 0 joueur connecté pendant la durée choisie.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setAutoStopEnabled((v) => !v)}
+                      className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors shrink-0 ${
+                        autoStopEnabled ? 'bg-[#23A559]' : 'bg-gray-600'
+                      }`}
+                    >
+                      <div
+                        className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${
+                          autoStopEnabled ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+
+                  {autoStopEnabled && (
+                    <div className="flex items-center justify-between gap-3 pt-2 border-t border-[#2B2D31]">
+                      <span className="text-xs text-gray-300">Temps d'inactivité avant arrêt :</span>
+                      <div className="flex items-center gap-1.5">
+                        {[15, 30, 60].map((m) => (
+                          <button
+                            key={m}
+                            type="button"
+                            onClick={() => setAutoStopMinutes(m)}
+                            className={`px-2 py-1 rounded text-xs font-mono ${
+                              autoStopMinutes === m
+                                ? 'bg-[#5865F2] text-white font-bold'
+                                : 'bg-[#2B2D31] text-gray-300'
+                            }`}
+                          >
+                            {m}m
+                          </button>
+                        ))}
+                        <input
+                          type="number"
+                          min={1}
+                          max={1440}
+                          value={autoStopMinutes}
+                          onChange={(e) => setAutoStopMinutes(Number(e.target.value))}
+                          className="w-20 bg-[#111214] text-white border border-[#2B2D31] rounded px-2 py-1 text-xs font-mono text-center focus:outline-none focus:border-[#5865F2]"
+                        />
+                        <span className="text-xs text-gray-400">min</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="bg-[#1E1F22] border border-[#111214] rounded-xl p-4 flex items-center justify-between gap-4">
+                  <div>
+                    <div className="text-sm font-bold text-white flex items-center gap-2">
+                      <ArchiveIcon className="w-4 h-4 text-[#8EA1E1]" />
+                      <span>Rotation automatique des Snapshots</span>
+                    </div>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      Nombre maximum de sauvegardes .zip à conserver pour ce serveur (les plus anciennes sont purgées).
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <select
+                      value={maxBackupsInput}
+                      onChange={(e) => setMaxBackupsInput(Number(e.target.value))}
+                      className="bg-[#111214] text-white border border-[#2B2D31] rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:border-[#5865F2]"
+                    >
+                      <option value={3}>3 max</option>
+                      <option value={5}>5 max</option>
+                      <option value={10}>10 max</option>
+                      <option value={15}>15 max</option>
+                      <option value={25}>25 max</option>
+                    </select>
                   </div>
                 </div>
               </div>
