@@ -56,6 +56,8 @@ interface PlayersData {
   players: string[];
   ops: string[];
   banned: string[];
+  whitelist?: string[];
+  whitelist_enabled?: boolean;
 }
 
 interface ServerStats {
@@ -202,6 +204,8 @@ export default function ServerPanel() {
   const [activeTab, setActiveTab] = useState<TabType>('console');
   const [logs, setLogs] = useState<string[]>([]);
   const [command, setCommand] = useState('');
+  const [cmdHistory, setCmdHistory] = useState<string[]>([]);
+  const [cmdHistoryIdx, setCmdHistoryIdx] = useState<number>(-1);
 
   // --- ÉTATS MONITORING (BLOC 2.1) ---
   const [stats, setStats] = useState<ServerStats>({
@@ -270,10 +274,13 @@ export default function ServerPanel() {
     players: [],
     ops: [],
     banned: [],
+    whitelist: [],
+    whitelist_enabled: false,
   });
   const [isLoadingPlayers, setIsLoadingPlayers] = useState(false);
   const [actionToast, setActionToast] = useState<string | null>(null);
   const [manualPlayerInput, setManualPlayerInput] = useState('');
+  const [whitelistInput, setWhitelistInput] = useState('');
 
   // --- ÉTATS ONGLET FICHIERS (WEB FTP) ---
   const [currentDir, setCurrentDir] = useState<string>('');
@@ -562,8 +569,32 @@ export default function ServerPanel() {
 
   const handleSendCommand = (e: React.FormEvent) => {
     e.preventDefault();
-    if (command.trim() && sendWsCommand(command)) {
+    const trimmed = command.trim();
+    if (trimmed && sendWsCommand(trimmed)) {
+      setCmdHistory((prev) => (prev[prev.length - 1] === trimmed ? prev : [...prev, trimmed]));
+      setCmdHistoryIdx(-1);
       setCommand('');
+    }
+  };
+
+  const handleConsoleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (cmdHistory.length === 0) return;
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const nextIdx = cmdHistoryIdx === -1 ? cmdHistory.length - 1 : Math.max(0, cmdHistoryIdx - 1);
+      setCmdHistoryIdx(nextIdx);
+      setCommand(cmdHistory[nextIdx]);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (cmdHistoryIdx === -1) return;
+      if (cmdHistoryIdx >= cmdHistory.length - 1) {
+        setCmdHistoryIdx(-1);
+        setCommand('');
+      } else {
+        const nextIdx = cmdHistoryIdx + 1;
+        setCmdHistoryIdx(nextIdx);
+        setCommand(cmdHistory[nextIdx]);
+      }
     }
   };
 
@@ -1269,9 +1300,10 @@ export default function ServerPanel() {
                 type="text"
                 value={command}
                 onChange={(e) => setCommand(e.target.value)}
+                onKeyDown={handleConsoleKeyDown}
                 placeholder={
                   isRunning
-                    ? 'Tapez une commande Minecraft (ex: say Bonjour, gamemode creative, list)...'
+                    ? 'Tapez une commande (flèches ↑/↓ pour l’historique)...'
                     : 'Démarrez le serveur pour envoyer des commandes...'
                 }
                 className="flex-grow bg-[#111214] text-white border border-[#2B2D31] rounded-md px-4 py-2 font-mono text-sm focus:outline-none focus:border-[#5865F2] disabled:opacity-50"
@@ -1704,7 +1736,8 @@ export default function ServerPanel() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+              {/* Opérateurs */}
               <div className="bg-[#2B2D31] rounded-xl border border-[#1E1F22] p-5 text-white shadow-lg">
                 <h3 className="text-base font-bold mb-3 flex items-center justify-between">
                   <span className="flex items-center gap-2">
@@ -1738,11 +1771,96 @@ export default function ServerPanel() {
                 )}
               </div>
 
+              {/* Whitelist (whitelist.json) */}
+              <div className="bg-[#2B2D31] rounded-xl border border-[#1E1F22] p-5 text-white shadow-lg flex flex-col">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-base font-bold flex items-center gap-2">
+                    <UsersIcon className="w-4 h-4 text-[#23A559]" />
+                    <span>Whitelist</span>
+                  </span>
+                  <button
+                    type="button"
+                    disabled={!isRunning}
+                    onClick={() => {
+                      const nextCmd = playersData.whitelist_enabled ? 'whitelist off' : 'whitelist on';
+                      if (sendWsCommand(nextCmd)) {
+                        setActionToast(`Commande "${nextCmd}" envoyée`);
+                        setTimeout(fetchPlayers, 800);
+                      }
+                    }}
+                    className={`text-[11px] px-2.5 py-0.5 rounded-full font-bold transition-colors ${
+                      playersData.whitelist_enabled
+                        ? 'bg-[#23A559]/20 text-[#23A559]'
+                        : 'bg-[#1E1F22] text-gray-400'
+                    }`}
+                  >
+                    {playersData.whitelist_enabled ? 'Activée' : 'Désactivée'}
+                  </button>
+                </div>
+
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (!whitelistInput.trim() || !isRunning) return;
+                    if (sendWsCommand(`whitelist add ${whitelistInput.trim()}`)) {
+                      setActionToast(`Joueur ${whitelistInput.trim()} ajouté à la Whitelist`);
+                      setWhitelistInput('');
+                      setTimeout(fetchPlayers, 800);
+                    }
+                  }}
+                  className="flex gap-1.5 mb-3"
+                >
+                  <input
+                    type="text"
+                    value={whitelistInput}
+                    onChange={(e) => setWhitelistInput(e.target.value)}
+                    placeholder="Ajouter un pseudo..."
+                    disabled={!isRunning}
+                    className="flex-grow bg-[#1E1F22] text-white border border-[#111214] rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-[#5865F2] disabled:opacity-50"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!isRunning || !whitelistInput.trim()}
+                    className="bg-[#23A559] hover:bg-[#1D8B4A] disabled:opacity-40 text-white px-2.5 py-1.5 rounded-lg text-xs font-semibold shrink-0"
+                  >
+                    +
+                  </button>
+                </form>
+
+                {(playersData.whitelist || []).length === 0 ? (
+                  <p className="text-sm text-gray-400">Aucun joueur sur la liste blanche.</p>
+                ) : (
+                  <div className="space-y-2 max-h-44 overflow-y-auto">
+                    {(playersData.whitelist || []).map((wlName) => (
+                      <div
+                        key={wlName}
+                        className="bg-[#1E1F22] px-3.5 py-2 rounded-lg flex items-center justify-between text-sm"
+                      >
+                        <span className="font-medium text-emerald-300">{wlName}</span>
+                        <button
+                          onClick={() => {
+                            if (sendWsCommand(`whitelist remove ${wlName}`)) {
+                              setActionToast(`Joueur ${wlName} retiré de la Whitelist`);
+                              setTimeout(fetchPlayers, 800);
+                            }
+                          }}
+                          disabled={!isRunning}
+                          className="text-xs text-gray-400 hover:text-[#DA373C] disabled:opacity-40"
+                        >
+                          Retirer
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Joueurs bannis */}
               <div className="bg-[#2B2D31] rounded-xl border border-[#1E1F22] p-5 text-white shadow-lg">
                 <h3 className="text-base font-bold mb-3 flex items-center justify-between">
                   <span className="flex items-center gap-2">
                     <BanIcon className="w-4 h-4 text-[#DA373C]" />
-                    <span>Joueurs bannis (banned-players.json)</span>
+                    <span>Bannis (banned-players)</span>
                   </span>
                   <span className="text-xs bg-[#1E1F22] px-2.5 py-0.5 rounded-full text-gray-400">
                     {playersData.banned.length}

@@ -879,9 +879,11 @@ async def get_server_players(server_name: str, db: AsyncSession = Depends(get_db
     """Récupère la liste des joueurs connectés en direct via rcon-cli list + la liste des OPs et Bannis"""
     server = await get_server_or_404(server_name, db)
 
-    # Lecture des fichiers ops.json et banned-players.json sur le disque
+    # Lecture des fichiers ops.json, banned-players.json et whitelist.json sur le disque
     ops_list = []
     banned_list = []
+    whitelist_list = []
+    whitelist_enabled = False
 
     ops_path = os.path.join(server.path, "ops.json")
     if os.path.exists(ops_path):
@@ -901,6 +903,23 @@ async def get_server_players(server_name: str, db: AsyncSession = Depends(get_db
         except Exception:
             pass
 
+    wl_path = os.path.join(server.path, "whitelist.json")
+    if os.path.exists(wl_path):
+        try:
+            with open(wl_path, "r", encoding="utf-8") as f:
+                wl_data = json.load(f)
+                whitelist_list = [entry.get("name") for entry in wl_data if isinstance(entry, dict) and entry.get("name")]
+        except Exception:
+            pass
+
+    props_path = os.path.join(server.path, "server.properties")
+    if os.path.exists(props_path):
+        try:
+            with open(props_path, "r", encoding="utf-8", errors="replace") as pf:
+                whitelist_enabled = "white-list=true" in pf.read().lower()
+        except Exception:
+            pass
+
     client = docker.from_env()
     try:
         container = client.containers.get(f"ourcraft_{server_name}")
@@ -912,6 +931,8 @@ async def get_server_players(server_name: str, db: AsyncSession = Depends(get_db
                 "players": [],
                 "ops": ops_list,
                 "banned": banned_list,
+                "whitelist": whitelist_list,
+                "whitelist_enabled": whitelist_enabled,
             }
 
         exec_res = container.exec_run("rcon-cli list")
@@ -944,6 +965,8 @@ async def get_server_players(server_name: str, db: AsyncSession = Depends(get_db
             "players": players,
             "ops": ops_list,
             "banned": banned_list,
+            "whitelist": whitelist_list,
+            "whitelist_enabled": whitelist_enabled,
             "raw": clean_output,
         }
 
@@ -955,6 +978,8 @@ async def get_server_players(server_name: str, db: AsyncSession = Depends(get_db
             "players": [],
             "ops": ops_list,
             "banned": banned_list,
+            "whitelist": whitelist_list,
+            "whitelist_enabled": whitelist_enabled,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors de la récupération des joueurs : {str(e)}")
