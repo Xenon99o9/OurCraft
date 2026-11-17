@@ -282,6 +282,34 @@ async def get_minecraft_servers(db: AsyncSession = Depends(get_db)):
     for s in db_servers:
         container_name = f"ourcraft_{s.name}"
         c = containers.get(container_name)
+        is_running = bool(c and c.status == "running")
+
+        # Lecture du max-players dans server.properties
+        max_players = 20
+        props_file = os.path.join(s.path, "server.properties")
+        if os.path.exists(props_file):
+            try:
+                with open(props_file, "r", encoding="utf-8", errors="replace") as pf:
+                    for line in pf:
+                        if line.strip().startswith("max-players="):
+                            max_players = int(line.strip().split("=", 1)[1].strip())
+                            break
+            except Exception:
+                pass
+
+        online_players: list[str] = []
+        if is_running and c:
+            try:
+                exec_res = c.exec_run("rcon-cli list")
+                clean_out = ANSI_ESCAPE_RE.sub("", exec_res.output.decode("utf-8", errors="replace")).strip()
+                m = re.search(r"There are (\d+)\s+(?:of a max of|/)\s*(\d+)\s+players online:?(.*)", clean_out, re.IGNORECASE | re.DOTALL)
+                if m:
+                    max_players = int(m.group(2))
+                    names_part = m.group(3).strip()
+                    if names_part:
+                        online_players = [p.strip() for p in names_part.split(",") if p.strip()]
+            except Exception:
+                pass
         
         server_list.append({
             "id": str(s.id),
@@ -293,6 +321,12 @@ async def get_minecraft_servers(db: AsyncSession = Depends(get_db)):
             "ram": getattr(s, "ram", "2G") or "2G",
             "server_type": getattr(s, "server_type", "PAPER") or "PAPER",
             "version": getattr(s, "version", "LATEST") or "LATEST",
+            "auto_stop_enabled": bool(getattr(s, "auto_stop_enabled", False)),
+            "auto_stop_minutes": int(getattr(s, "auto_stop_minutes", 30) or 30),
+            "max_backups": int(getattr(s, "max_backups", 5) or 5),
+            "players_online": len(online_players),
+            "players_max": max_players,
+            "player_names": online_players,
         })
         
     return server_list

@@ -12,6 +12,12 @@ export interface Server {
   ram?: string
   server_type?: string
   version?: string
+  auto_stop_enabled?: boolean
+  auto_stop_minutes?: number
+  max_backups?: number
+  players_online?: number
+  players_max?: number
+  player_names?: string[]
 }
 
 export interface ServerSettingsPayload {
@@ -20,6 +26,9 @@ export interface ServerSettingsPayload {
   server_type: string
   version: string
   backup_before_convert?: boolean
+  auto_stop_enabled?: boolean
+  auto_stop_minutes?: number
+  max_backups?: number
 }
 
 export interface CreateServerPayload {

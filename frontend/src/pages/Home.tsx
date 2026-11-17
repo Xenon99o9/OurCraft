@@ -15,6 +15,10 @@ import {
   UserIcon,
   LogOutIcon,
   PaletteIcon,
+  PlayIcon,
+  SquareIcon,
+  CopyIcon,
+  CheckIcon,
 } from '../components/Icons';
 
 const ENGINE_OPTIONS = [
@@ -42,7 +46,7 @@ const VERSION_PRESETS = [
 const RAM_PRESETS = ['1G', '2G', '4G', '6G', '8G', '12G'];
 
 export default function Home() {
-  const { servers, isLoading, fetchServers, createServer, fetchImportCandidates, importServers } = useServerStore();
+  const { servers, isLoading, fetchServers, startServer, stopServer, createServer, fetchImportCandidates, importServers } = useServerStore();
   const { settings, fetchSettings } = useSettingsStore();
   const { user, logout, updateTheme, hasPermission } = useAuthStore();
   const navigate = useNavigate();
@@ -50,8 +54,10 @@ export default function Home() {
   const isAdmin = user?.role === 'admin';
   const visibleServers = servers.filter((s) => hasPermission(s.name, 'view'));
 
-  // Menu déroulant de thème du compte
+  // Menu déroulant de thème du compte & état de copie d'adresse IP
   const [showThemeMenu, setShowThemeMenu] = useState(false);
+  const [copiedServer, setCopiedServer] = useState<string | null>(null);
+  const [powerBusyServer, setPowerBusyServer] = useState<string | null>(null);
 
   // --- ÉTATS MODALE CRÉATION ---
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -764,35 +770,122 @@ export default function Home() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
           {visibleServers.map((server) => {
             const isOnline = server.status.includes('running');
+            const canPower = hasPermission(server.name, 'power');
+            const address = `${window.location.hostname}:${server.port}`;
+            const isCopied = copiedServer === server.name;
+            const isPowerBusy = powerBusyServer === server.name;
+            const onlineCount = server.players_online ?? 0;
+            const maxPlayers = server.players_max ?? 20;
+            const playerNames = server.player_names ?? [];
+
             return (
               <div
                 key={server.id}
                 onClick={() => navigate(`/server/${server.name}`)}
                 className="bg-[#2B2D31] p-5 rounded-xl shadow-sm border border-[#1E1F22] hover:border-[#5865F2] hover:cursor-pointer transition-all flex flex-col group"
               >
-                <div className="flex justify-between items-start mb-4">
+                <div className="flex justify-between items-start mb-3">
                   <h2 className="text-xl font-bold text-white truncate pr-2 group-hover:text-[#5865F2] transition-colors">
                     {server.name}
                   </h2>
-                  <span
-                    className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-xs font-bold uppercase tracking-wider shrink-0 ${
-                      isOnline ? 'bg-[#23A559]/15 text-[#23A559]' : 'bg-[#1E1F22] text-gray-400'
-                    }`}
-                  >
-                    <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-[#23A559]' : 'bg-[#DA373C]'}`}></span>
-                    <span>{isOnline ? 'En ligne' : 'Arrêté'}</span>
-                  </span>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    {canPower && (
+                      <button
+                        type="button"
+                        disabled={isPowerBusy}
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          setPowerBusyServer(server.name);
+                          if (isOnline) {
+                            await stopServer(server.name);
+                          } else {
+                            await startServer(server);
+                          }
+                          setPowerBusyServer(null);
+                        }}
+                        className={`p-1.5 rounded-lg text-white transition-colors shadow ${
+                          isOnline
+                            ? 'bg-[#DA373C]/80 hover:bg-[#DA373C]'
+                            : 'bg-[#23A559]/80 hover:bg-[#23A559]'
+                        }`}
+                        title={isOnline ? 'Arrêter le serveur' : 'Démarrer le serveur'}
+                      >
+                        {isOnline ? <SquareIcon className="w-3.5 h-3.5" /> : <PlayIcon className="w-3.5 h-3.5" />}
+                      </button>
+                    )}
+
+                    <span
+                      className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${
+                        isOnline ? 'bg-[#23A559]/15 text-[#23A559]' : 'bg-[#1E1F22] text-gray-400'
+                      }`}
+                    >
+                      <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-[#23A559]' : 'bg-[#DA373C]'}`}></span>
+                      <span>{isOnline ? 'En ligne' : 'Arrêté'}</span>
+                    </span>
+                  </div>
                 </div>
-                <div className="flex flex-wrap gap-1.5 mb-3 text-xs font-mono">
+
+                <div className="flex flex-wrap items-center gap-1.5 mb-3 text-xs font-mono">
                   <span className="bg-[#1E1F22] text-[#8EA1E1] px-2.5 py-0.5 rounded border border-[#111214] font-semibold">
                     {server.server_type || 'VANILLA'} {server.version || 'LATEST'}
                   </span>
                   <span className="bg-[#1E1F22] text-gray-300 px-2.5 py-0.5 rounded border border-[#111214]">
                     RAM: {server.ram || '2G'}
                   </span>
+                  <span className="bg-[#1E1F22] text-gray-300 px-2.5 py-0.5 rounded border border-[#111214] flex items-center gap-1.5">
+                    <UsersIcon className="w-3 h-3 text-[#8EA1E1]" />
+                    <span>
+                      {isOnline ? `${onlineCount} / ${maxPlayers}` : `0 / ${maxPlayers}`}
+                    </span>
+                  </span>
                 </div>
-                <div className="mt-auto pt-4 border-t border-[#1E1F22] flex justify-between items-center text-sm text-gray-400">
-                  <span className="font-mono text-xs">Port: {server.port}</span>
+
+                {/* Avatars des joueurs connectés si en ligne */}
+                {isOnline && playerNames.length > 0 && (
+                  <div className="flex items-center gap-1.5 mb-3">
+                    <div className="flex -space-x-1.5 overflow-hidden">
+                      {playerNames.slice(0, 6).map((pName) => (
+                        <img
+                          key={pName}
+                          src={`https://mc-heads.net/avatar/${encodeURIComponent(pName)}/24`}
+                          alt={pName}
+                          title={pName}
+                          className="inline-block h-5 w-5 rounded ring-2 ring-[#2B2D31] bg-[#111214]"
+                        />
+                      ))}
+                    </div>
+                    <span className="text-xs text-gray-300 truncate">
+                      {playerNames.slice(0, 3).join(', ')}
+                      {playerNames.length > 3 ? ` +${playerNames.length - 3}` : ''}
+                    </span>
+                  </div>
+                )}
+
+                <div className="mt-auto pt-3.5 border-t border-[#1E1F22] flex justify-between items-center text-sm text-gray-400">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigator.clipboard?.writeText(address);
+                      setCopiedServer(server.name);
+                      setTimeout(() => setCopiedServer(null), 2000);
+                    }}
+                    className="font-mono text-xs bg-[#1E1F22] hover:bg-[#111214] text-gray-300 px-2.5 py-1 rounded border border-[#111214] flex items-center gap-1.5 transition-colors"
+                    title="Copier l'adresse IP:Port pour vos amis"
+                  >
+                    {isCopied ? (
+                      <>
+                        <CheckIcon className="w-3.5 h-3.5 text-[#23A559]" />
+                        <span className="text-[#23A559] font-sans font-semibold">Copié !</span>
+                      </>
+                    ) : (
+                      <>
+                        <CopyIcon className="w-3.5 h-3.5 text-gray-400" />
+                        <span>Port: {server.port}</span>
+                      </>
+                    )}
+                  </button>
                   <span className="text-[#5865F2] font-medium group-hover:translate-x-0.5 transition-transform">
                     Ouvrir le panel →
                   </span>
