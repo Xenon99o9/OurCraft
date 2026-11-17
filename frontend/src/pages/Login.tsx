@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useAuthStore } from '../store/useAuthStore';
+import { CrownIcon, LockIcon } from '../components/Icons';
 
 export default function Login() {
   const { hasUsers, setupInitialAdmin, login } = useAuthStore();
@@ -31,8 +32,8 @@ export default function Login() {
     <div className="min-h-screen bg-[#1E1F22] flex items-center justify-center p-4">
       <div className="bg-[#2B2D31] border border-[#111214] rounded-2xl shadow-2xl w-full max-w-md p-8">
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-[#5865F2]/20 border border-[#5865F2]/40 text-3xl mb-3">
-            {isSetupMode ? '👑' : '🔐'}
+          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-[#5865F2]/20 border border-[#5865F2]/40 text-[#8EA1E1] mb-3">
+            {isSetupMode ? <CrownIcon className="w-7 h-7" /> : <LockIcon className="w-7 h-7" />}
           </div>
           <h1 className="text-2xl font-extrabold text-white tracking-tight">OurCraft V2</h1>
           <p className="text-sm text-gray-400 mt-1">

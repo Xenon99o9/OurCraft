@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { ArrowLeftIcon, ShieldIcon, LockIcon, RefreshIcon, BanIcon } from '../components/Icons';
 
 const API_BASE = `http://${window.location.hostname}:8000`;
 
@@ -139,13 +140,14 @@ export default function SecurityShield() {
         <div className="flex items-center space-x-4">
           <button
             onClick={() => navigate('/')}
-            className="text-gray-400 hover:text-white bg-[#2B2D31] px-3.5 py-2 rounded-lg transition-colors text-sm"
+            className="text-gray-400 hover:text-white bg-[#2B2D31] px-3.5 py-2 rounded-lg transition-colors text-sm flex items-center gap-1.5"
           >
-            ← Retour
+            <ArrowLeftIcon className="w-4 h-4" />
+            <span>Retour</span>
           </button>
           <div>
             <h1 className="text-3xl font-bold text-white tracking-wide flex items-center gap-3">
-              <span>🛡️</span>
+              <ShieldIcon className="w-7 h-7 text-amber-400" />
               <span>Bouclier Réseau & Anti-Attaques</span>
             </h1>
             <p className="text-gray-400 text-sm mt-1">
@@ -163,7 +165,7 @@ export default function SecurityShield() {
                 : 'bg-[#2B2D31] hover:bg-[#35373C] border border-[#1E1F22] text-amber-300'
             }`}
           >
-            <span>🔒</span>
+            <LockIcon className="w-4 h-4" />
             <span>
               {overview.lockdown_active
                 ? 'Lockdown Actif (Désactiver)'
@@ -173,9 +175,10 @@ export default function SecurityShield() {
           <button
             onClick={fetchOverview}
             disabled={isLoading}
-            className="bg-[#5865F2] hover:bg-[#4752C4] text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors"
+            className="bg-[#5865F2] hover:bg-[#4752C4] text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5"
           >
-            ↻ Actualiser
+            <RefreshIcon className="w-4 h-4" />
+            <span>Actualiser</span>
           </button>
         </div>
       </header>
@@ -411,9 +414,10 @@ export default function SecurityShield() {
                   {entry.status !== 'blocked' && (
                     <button
                       onClick={() => handleBlockIp(entry.ip, `Bloquée suite à connexion de ${entry.player}`)}
-                      className="bg-[#DA373C]/20 hover:bg-[#DA373C] text-red-300 hover:text-white px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors shrink-0 self-end sm:self-auto"
+                      className="bg-[#DA373C]/20 hover:bg-[#DA373C] text-red-300 hover:text-white px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors shrink-0 self-end sm:self-auto flex items-center gap-1.5"
                     >
-                      🚫 Bloquer l'IP
+                      <BanIcon className="w-3.5 h-3.5" />
+                      <span>Bloquer l'IP</span>
                     </button>
                   )}
                 </div>

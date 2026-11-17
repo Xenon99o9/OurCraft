@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSettingsStore } from '../store/useSettingsStore';
+import { ArrowLeftIcon, FolderIcon } from '../components/Icons';
 
 export default function Settings() {
   const navigate = useNavigate();
@@ -40,9 +41,10 @@ export default function Settings() {
       <header className="mb-8 flex items-center space-x-4 border-b border-[#1E1F22] pb-6">
         <button
           onClick={() => navigate('/')}
-          className="text-gray-400 hover:text-white bg-[#2B2D31] px-3.5 py-2 rounded-lg transition-colors text-sm"
+          className="text-gray-400 hover:text-white bg-[#2B2D31] px-3.5 py-2 rounded-lg transition-colors text-sm flex items-center gap-1.5"
         >
-          ← Retour
+          <ArrowLeftIcon className="w-4 h-4" />
+          <span>Retour</span>
         </button>
         <div>
           <h1 className="text-3xl font-bold text-white tracking-wide">Paramètres de l'Application</h1>
@@ -107,13 +109,14 @@ export default function Settings() {
                         key={suggestion}
                         type="button"
                         onClick={() => setFormData({ ...formData, base_path: suggestion })}
-                        className={`text-xs font-mono px-3 py-1.5 rounded-lg border transition-colors ${
+                        className={`text-xs font-mono px-3 py-1.5 rounded-lg border transition-colors flex items-center gap-1.5 ${
                           isSelected
                             ? 'bg-[#5865F2] text-white border-[#5865F2]'
                             : 'bg-[#1E1F22] text-gray-300 border-[#111214] hover:border-[#5865F2]'
                         }`}
                       >
-                        📁 {suggestion}
+                        <FolderIcon className="w-3.5 h-3.5" />
+                        <span>{suggestion}</span>
                       </button>
                     );
                   })}

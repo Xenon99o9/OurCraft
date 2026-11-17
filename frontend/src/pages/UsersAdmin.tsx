@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useServerStore } from '../store/useServerStore';
 import { type AuthUser, type ServerPermKey } from '../store/useAuthStore';
+import { ArrowLeftIcon, UsersIcon, CrownIcon, UserIcon, TrashIcon, ServerIcon } from '../components/Icons';
 
 const API_BASE = `http://${window.location.hostname}:8000`;
 
@@ -148,13 +149,14 @@ export default function UsersAdmin() {
         <div className="flex items-center space-x-4">
           <button
             onClick={() => navigate('/')}
-            className="text-gray-400 hover:text-white bg-[#2B2D31] px-3.5 py-2 rounded-lg transition-colors text-sm"
+            className="text-gray-400 hover:text-white bg-[#2B2D31] px-3.5 py-2 rounded-lg transition-colors text-sm flex items-center gap-1.5"
           >
-            ← Retour
+            <ArrowLeftIcon className="w-4 h-4" />
+            <span>Retour</span>
           </button>
           <div>
             <h1 className="text-3xl font-bold text-white tracking-wide flex items-center gap-3">
-              <span>👥</span>
+              <UsersIcon className="w-7 h-7 text-[#8EA1E1]" />
               <span>Comptes & Droits Multi-Utilisateurs</span>
             </h1>
             <p className="text-gray-400 text-sm mt-1">
@@ -207,13 +209,14 @@ export default function UsersAdmin() {
                       <div className="flex items-center gap-2">
                         <span className="font-bold text-white">{u.username}</span>
                         <span
-                          className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${
+                          className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase flex items-center gap-1 ${
                             u.role === 'admin'
                               ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
                               : 'bg-[#5865F2]/20 text-[#8EA1E1] border border-[#5865F2]/40'
                           }`}
                         >
-                          {u.role === 'admin' ? '👑 Admin Central' : '👤 Sous-compte'}
+                          {u.role === 'admin' ? <CrownIcon className="w-3 h-3" /> : <UserIcon className="w-3 h-3" />}
+                          <span>{u.role === 'admin' ? 'Admin Central' : 'Sous-compte'}</span>
                         </span>
                       </div>
                       <p className="text-xs text-gray-400 mt-1">
@@ -237,7 +240,7 @@ export default function UsersAdmin() {
                         className="text-gray-400 hover:text-[#DA373C] px-2 py-1.5 text-xs"
                         title="Supprimer"
                       >
-                        🗑️
+                        <TrashIcon className="w-3.5 h-3.5" />
                       </button>
                     </div>
                   </div>
@@ -320,7 +323,7 @@ export default function UsersAdmin() {
                         <div key={srv.name} className="bg-[#1E1F22] border border-[#111214] rounded-xl p-4">
                           <div className="flex items-center justify-between mb-3 pb-2 border-b border-[#2B2D31]">
                             <span className="font-bold text-sm text-white flex items-center gap-2">
-                              <span>🎮</span>
+                              <ServerIcon className="w-4 h-4 text-[#8EA1E1]" />
                               <span>{srv.name}</span>
                               <span className="text-xs font-mono text-gray-400">({srv.server_type})</span>
                             </span>

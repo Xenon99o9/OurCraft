@@ -1,3 +1,97 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root,
+[data-theme="discord"] {
+  --oc-bg-app: #313338;
+  --oc-bg-card: #2B2D31;
+  --oc-bg-sub: #1E1F22;
+  --oc-bg-deep: #111214;
+  --oc-accent: #5865F2;
+  --oc-accent-hover: #4752C4;
+  --oc-accent-light: #8EA1E1;
+}
+
+[data-theme="emerald"] {
+  --oc-bg-app: #0f1714;
+  --oc-bg-card: #15221d;
+  --oc-bg-sub: #0b120f;
+  --oc-bg-deep: #060a08;
+  --oc-accent: #10b981;
+  --oc-accent-hover: #059669;
+  --oc-accent-light: #6ee7b7;
+}
+
+[data-theme="amethyst"] {
+  --oc-bg-app: #130f1e;
+  --oc-bg-card: #1b162a;
+  --oc-bg-sub: #0e0b16;
+  --oc-bg-deep: #08060d;
+  --oc-accent: #8b5cf6;
+  --oc-accent-hover: #7c3aed;
+  --oc-accent-light: #c4b5fd;
+}
+
+[data-theme="ocean"] {
+  --oc-bg-app: #0f172a;
+  --oc-bg-card: #1e293b;
+  --oc-bg-sub: #090e1a;
+  --oc-bg-deep: #050811;
+  --oc-accent: #0ea5e9;
+  --oc-accent-hover: #0284c7;
+  --oc-accent-light: #7dd3fc;
+}
+
+[data-theme="crimson"] {
+  --oc-bg-app: #190e12;
+  --oc-bg-card: #24141a;
+  --oc-bg-sub: #11090c;
+  --oc-bg-deep: #090406;
+  --oc-accent: #f43f5e;
+  --oc-accent-hover: #e11d48;
+  --oc-accent-light: #fda4af;
+}
+
+/* Application globale des variables de thème */
+.bg-\[\#313338\] {
+  background-color: var(--oc-bg-app) !important;
+}
+.bg-\[\#2B2D31\] {
+  background-color: var(--oc-bg-card) !important;
+}
+.bg-\[\#1E1F22\] {
+  background-color: var(--oc-bg-sub) !important;
+}
+.bg-\[\#111214\] {
+  background-color: var(--oc-bg-deep) !important;
+}
+.bg-\[\#5865F2\] {
+  background-color: var(--oc-accent) !important;
+}
+.hover\:bg-\[\#4752C4\]:hover {
+  background-color: var(--oc-accent-hover) !important;
+}
+.border-\[\#1E1F22\],
+.border-\[\#2B2D31\] {
+  border-color: var(--oc-bg-sub) !important;
+}
+.border-\[\#111214\] {
+  border-color: var(--oc-bg-deep) !important;
+}
+.border-\[\#5865F2\] {
+  border-color: var(--oc-accent) !important;
+}
+.hover\:border-\[\#5865F2\]:hover,
+.focus\:border-\[\#5865F2\]:focus {
+  border-color: var(--oc-accent) !important;
+}
+.text-\[\#5865F2\] {
+  color: var(--oc-accent) !important;
+}
+.text-\[\#8EA1E1\] {
+  color: var(--oc-accent-light) !important;
+}
+.group:hover .group-hover\:text-\[\#5865F2\] {
+  color: var(--oc-accent) !important;
+}

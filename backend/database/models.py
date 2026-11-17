@@ -50,6 +50,7 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(30), default="admin") # "admin" ou "subuser"
     permissions_json: Mapped[str] = mapped_column(Text, default="{}") # JSON des droits par serveur
+    theme: Mapped[str] = mapped_column(String(30), default="discord") # Thème sauvegardé par compte
 
 class BlockedIP(Base):
     __tablename__ = "blocked_ips"

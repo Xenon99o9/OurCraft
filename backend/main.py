@@ -56,6 +56,9 @@ async def ensure_db_schema():
                 await conn.execute(text(
                     "ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions_json TEXT DEFAULT '{}' NOT NULL;"
                 ))
+                await conn.execute(text(
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS theme VARCHAR(30) DEFAULT 'discord' NOT NULL;"
+                ))
             _db_initialized = True
             return
         except Exception as e:
@@ -2033,7 +2036,12 @@ def serialize_user(u: User) -> dict:
         "username": u.username,
         "role": getattr(u, "role", "admin") or "admin",
         "permissions": perms,
+        "theme": getattr(u, "theme", "discord") or "discord",
     }
+
+
+class ThemeUpdateRequest(BaseModel):
+    theme: str
 
 
 class AuthLoginRequest(BaseModel):
@@ -2111,6 +2119,31 @@ async def get_current_user_profile(
     if not user:
         raise HTTPException(status_code=401, detail="Utilisateur introuvable.")
     return {"user": serialize_user(user)}
+
+
+@app.put("/api/auth/theme")
+async def update_user_theme(
+    payload: ThemeUpdateRequest,
+    authorization: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_db)
+):
+    """Sauvegarde le thème visuel choisi directement sur le compte de l'utilisateur en BDD"""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Non authentifié.")
+    token = authorization.split(" ", 1)[1].strip()
+    decoded = decode_auth_token(token)
+    if not decoded:
+        raise HTTPException(status_code=401, detail="Session expirée ou invalide.")
+
+    res = await db.execute(select(User).filter_by(id=decoded["uid"]))
+    user = res.scalars().first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable.")
+
+    user.theme = payload.theme.strip().lower()
+    await db.commit()
+    await db.refresh(user)
+    return {"status": "success", "user": serialize_user(user)}
 
 
 @app.get("/api/users")

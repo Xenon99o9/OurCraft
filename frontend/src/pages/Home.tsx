@@ -2,7 +2,20 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useServerStore, type ImportCandidate } from '../store/useServerStore';
 import { useSettingsStore } from '../store/useSettingsStore';
-import { useAuthStore } from '../store/useAuthStore';
+import { useAuthStore, APP_THEMES, type AppThemeId } from '../store/useAuthStore';
+import {
+  PlusIcon,
+  DownloadIcon,
+  ShieldIcon,
+  UsersIcon,
+  SettingsIcon,
+  RefreshIcon,
+  FolderIcon,
+  CrownIcon,
+  UserIcon,
+  LogOutIcon,
+  PaletteIcon,
+} from '../components/Icons';
 
 const ENGINE_OPTIONS = [
   { id: 'VANILLA', name: 'Vanilla Classique', badge: 'Officiel Mojang', desc: 'Serveur Minecraft officiel pur, sans modification' },
@@ -31,11 +44,14 @@ const RAM_PRESETS = ['1G', '2G', '4G', '6G', '8G', '12G'];
 export default function Home() {
   const { servers, isLoading, fetchServers, createServer, fetchImportCandidates, importServers } = useServerStore();
   const { settings, fetchSettings } = useSettingsStore();
-  const { user, logout, hasPermission } = useAuthStore();
+  const { user, logout, updateTheme, hasPermission } = useAuthStore();
   const navigate = useNavigate();
 
   const isAdmin = user?.role === 'admin';
   const visibleServers = servers.filter((s) => hasPermission(s.name, 'view'));
+
+  // Menu déroulant de thème du compte
+  const [showThemeMenu, setShowThemeMenu] = useState(false);
 
   // --- ÉTATS MODALE CRÉATION ---
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -63,7 +79,6 @@ export default function Home() {
     fetchSettings();
   }, [fetchServers, fetchSettings]);
 
-  // Calcule le prochain port libre dans la plage configurée (port_min -> port_max)
   const computeNextFreePort = () => {
     const used = new Set(servers.map((s) => s.port));
     const minP = settings.port_min || 25565;
@@ -124,7 +139,6 @@ export default function Home() {
     }
     setEngineOverrides(initialOverrides);
 
-    // Pré-cocher automatiquement les dossiers détectés comme de vrais serveurs Minecraft non encore importés
     const autoSelected = data.candidates
       .filter((c) => !c.already_imported && c.is_minecraft_dir)
       .map((c) => c.name);
@@ -164,102 +178,178 @@ export default function Home() {
 
   const availableCandidates = candidates.filter((c) => !c.already_imported);
   const nextSuggestedPort = computeNextFreePort();
+  const currentTheme = APP_THEMES.find((t) => t.id === (user?.theme || 'discord')) || APP_THEMES[0];
 
   return (
-    <div className="p-6 md:p-8 max-w-6xl mx-auto relative">
-      {/* HEADER PRINCIPAL */}
-      <header className="mb-8 flex flex-col lg:flex-row lg:items-center justify-between border-b border-[#1E1F22] pb-6 gap-4">
-        <div>
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-3xl font-extrabold text-white tracking-tight">OurCraft</h1>
-            <span className="bg-[#5865F2]/20 text-[#8EA1E1] border border-[#5865F2]/30 text-xs font-bold px-2.5 py-0.5 rounded-full">
-              V2 Panel
-            </span>
-            {user && (
-              <span className="bg-[#2B2D31] border border-[#1E1F22] text-gray-200 text-xs px-3 py-1 rounded-full flex items-center gap-1.5">
-                <span>{isAdmin ? '👑' : '👤'}</span>
-                <span className="font-semibold">{user.username}</span>
-                <button
-                  onClick={logout}
-                  className="ml-2 text-gray-400 hover:text-[#DA373C] font-medium"
-                  title="Se déconnecter"
-                >
-                  Déconnexion
-                </button>
+    <div className="p-6 md:p-8 max-w-7xl mx-auto relative">
+      {/* HEADER PRINCIPAL : TOUS LES BOUTONS SUR UNE SEULE LIGNE + COMPTE EN HAUT À DROITE */}
+      <header className="mb-8 border-b border-[#1E1F22] pb-5">
+        <div className="flex items-center justify-between gap-4 overflow-x-auto pb-1">
+          {/* GAUCHE : Logo & Répertoire */}
+          <div className="flex items-center gap-4 shrink-0">
+            <div className="flex items-center gap-2.5">
+              <h1 className="text-2xl md:text-3xl font-extrabold text-white tracking-tight">OurCraft</h1>
+              <span className="bg-[#5865F2]/20 text-[#8EA1E1] border border-[#5865F2]/30 text-[11px] font-bold px-2.5 py-0.5 rounded-full">
+                V2 Panel
               </span>
+            </div>
+
+            {isAdmin && (
+              <button
+                onClick={() => navigate('/settings')}
+                className="hidden xl:flex font-mono text-xs bg-[#2B2D31] hover:bg-[#1E1F22] text-gray-300 px-3 py-1.5 rounded-lg border border-[#1E1F22] transition-colors items-center gap-2"
+                title="Changer le répertoire des serveurs"
+              >
+                <FolderIcon className="w-3.5 h-3.5 text-[#8EA1E1]" />
+                <span>{settings.base_path || 'Chargement...'}</span>
+                <span className="text-[#5865F2] font-sans font-semibold ml-1">Modifier</span>
+              </button>
             )}
           </div>
-          {isAdmin && (
-            <div className="flex flex-wrap items-center gap-2 mt-2 text-sm text-gray-400">
-              <span>Répertoire des serveurs :</span>
+
+          {/* DROITE : Tous les boutons d'action + Compte connecté tout à droite sur la même ligne */}
+          <div className="flex items-center gap-2 shrink-0">
+            {isAdmin && (
+              <>
+                <button
+                  onClick={openCreateModal}
+                  className="bg-[#23A559] hover:bg-[#1D8B4A] text-white px-3.5 py-2 rounded-lg font-semibold transition-colors shadow-sm flex items-center gap-1.5 text-xs whitespace-nowrap"
+                >
+                  <PlusIcon className="w-4 h-4" />
+                  <span>Nouveau Serveur</span>
+                </button>
+
+                <button
+                  onClick={openImportModal}
+                  className="bg-[#2B2D31] hover:bg-[#1E1F22] border border-[#1E1F22] text-white px-3 py-2 rounded-lg font-medium transition-colors flex items-center gap-1.5 text-xs whitespace-nowrap"
+                >
+                  <DownloadIcon className="w-3.5 h-3.5 text-[#8EA1E1]" />
+                  <span>Importer</span>
+                </button>
+
+                <button
+                  onClick={() => navigate('/security')}
+                  className="bg-[#2B2D31] hover:bg-[#1E1F22] border border-[#1E1F22] text-amber-300 px-3 py-2 rounded-lg font-medium transition-colors flex items-center gap-1.5 text-xs whitespace-nowrap"
+                  title="Bouclier Réseau & Anti-Attaques"
+                >
+                  <ShieldIcon className="w-3.5 h-3.5" />
+                  <span>Bouclier</span>
+                </button>
+
+                <button
+                  onClick={() => navigate('/users')}
+                  className="bg-[#2B2D31] hover:bg-[#1E1F22] border border-[#1E1F22] text-gray-200 px-3 py-2 rounded-lg font-medium transition-colors flex items-center gap-1.5 text-xs whitespace-nowrap"
+                  title="Gestion des comptes & droits par serveur"
+                >
+                  <UsersIcon className="w-3.5 h-3.5 text-[#8EA1E1]" />
+                  <span>Comptes</span>
+                </button>
+
+                <button
+                  onClick={() => navigate('/settings')}
+                  className="bg-[#2B2D31] hover:bg-[#1E1F22] border border-[#1E1F22] text-gray-200 p-2 rounded-lg transition-colors"
+                  title="Paramètres globaux de l'application"
+                >
+                  <SettingsIcon className="w-4 h-4" />
+                </button>
+              </>
+            )}
+
+            <button
+              onClick={fetchServers}
+              className="bg-[#2B2D31] hover:bg-[#1E1F22] border border-[#1E1F22] text-gray-300 hover:text-white p-2 rounded-lg transition-colors"
+              title="Rafraîchir l'état des serveurs"
+            >
+              <RefreshIcon className="w-4 h-4" />
+            </button>
+
+            <div className="w-px h-6 bg-[#1E1F22] mx-1" />
+
+            {/* Sélecteur de Thème sauvegardé sur le compte */}
+            <div className="relative">
               <button
-                onClick={() => navigate('/settings')}
-                className="font-mono text-xs bg-[#2B2D31] hover:bg-[#1E1F22] text-gray-200 px-2.5 py-1 rounded-md border border-[#1E1F22] transition-colors flex items-center gap-1.5"
-                title="Cliquer pour changer le dossier des serveurs"
+                onClick={() => setShowThemeMenu((v) => !v)}
+                className="bg-[#2B2D31] hover:bg-[#1E1F22] border border-[#1E1F22] text-gray-200 px-2.5 py-2 rounded-lg flex items-center gap-1.5 text-xs font-medium transition-colors"
+                title="Changer le thème visuel de votre compte"
               >
-                <span>📁 {settings.base_path || 'Chargement...'}</span>
-                <span className="text-[#5865F2] font-sans font-medium">Modifier</span>
+                <PaletteIcon className="w-3.5 h-3.5 text-[#8EA1E1]" />
+                <span
+                  className="w-2.5 h-2.5 rounded-full"
+                  style={{ backgroundColor: currentTheme.color }}
+                />
               </button>
+
+              {showThemeMenu && (
+                <div className="absolute right-0 mt-2 w-48 bg-[#2B2D31] border border-[#111214] rounded-xl shadow-2xl p-1.5 z-50">
+                  <div className="px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                    Thème du compte ({user?.username})
+                  </div>
+                  {APP_THEMES.map((t) => {
+                    const isSelected = (user?.theme || 'discord') === t.id;
+                    return (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => {
+                          updateTheme(t.id as AppThemeId);
+                          setShowThemeMenu(false);
+                        }}
+                        className={`w-full px-3 py-2 rounded-lg text-xs flex items-center justify-between transition-colors ${
+                          isSelected
+                            ? 'bg-[#5865F2] text-white font-semibold'
+                            : 'text-gray-300 hover:bg-[#1E1F22]'
+                        }`}
+                      >
+                        <span className="flex items-center gap-2">
+                          <span
+                            className="w-3 h-3 rounded-full border border-white/30"
+                            style={{ backgroundColor: t.color }}
+                          />
+                          <span>{t.label}</span>
+                        </span>
+                        {isSelected && <span>✓</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-          )}
+
+            {/* Badge du compte connecté tout en haut à droite */}
+            {user && (
+              <div className="bg-[#2B2D31] border border-[#1E1F22] text-gray-200 text-xs px-3 py-1.5 rounded-lg flex items-center gap-2 whitespace-nowrap">
+                {isAdmin ? (
+                  <CrownIcon className="w-3.5 h-3.5 text-amber-400" />
+                ) : (
+                  <UserIcon className="w-3.5 h-3.5 text-[#8EA1E1]" />
+                )}
+                <span className="font-bold text-white">{user.username}</span>
+                <button
+                  onClick={logout}
+                  className="ml-1 pl-2 border-l border-[#1E1F22] text-gray-400 hover:text-[#DA373C] flex items-center gap-1 transition-colors"
+                  title="Se déconnecter"
+                >
+                  <LogOutIcon className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* BARRE DE BOUTONS D'ACTION */}
-        <div className="flex flex-wrap items-center gap-2">
-          {isAdmin && (
-            <>
-              <button
-                onClick={openCreateModal}
-                className="bg-[#23A559] hover:bg-[#1D8B4A] text-white px-4 py-2.5 rounded-lg font-semibold transition-colors shadow-md flex items-center gap-1.5 text-sm"
-              >
-                <span>＋</span>
-                <span>Nouveau Serveur</span>
-              </button>
-
-              <button
-                onClick={openImportModal}
-                className="bg-[#2B2D31] hover:bg-[#35373C] border border-[#1E1F22] text-white px-3.5 py-2.5 rounded-lg font-medium transition-colors shadow-sm flex items-center gap-1.5 text-sm"
-              >
-                <span>📥</span>
-                <span>Importer</span>
-              </button>
-
-              <button
-                onClick={() => navigate('/security')}
-                className="bg-[#2B2D31] hover:bg-[#35373C] border border-[#1E1F22] text-amber-300 px-3.5 py-2.5 rounded-lg font-medium transition-colors shadow-sm flex items-center gap-1.5 text-sm"
-                title="Bouclier Réseau & Anti-Attaques"
-              >
-                <span>🛡️</span>
-                <span>Bouclier</span>
-              </button>
-
-              <button
-                onClick={() => navigate('/users')}
-                className="bg-[#2B2D31] hover:bg-[#35373C] border border-[#1E1F22] text-gray-200 px-3.5 py-2.5 rounded-lg font-medium transition-colors shadow-sm flex items-center gap-1.5 text-sm"
-                title="Gestion des comptes & droits par serveur"
-              >
-                <span>👥</span>
-                <span>Comptes</span>
-              </button>
-
-              <button
-                onClick={() => navigate('/settings')}
-                className="bg-[#2B2D31] hover:bg-[#35373C] border border-[#1E1F22] text-gray-200 px-3.5 py-2.5 rounded-lg font-medium transition-colors shadow-sm flex items-center gap-1.5 text-sm"
-                title="Paramètres globaux de l'application"
-              >
-                <span>⚙️</span>
-              </button>
-            </>
-          )}
-
-          <button
-            onClick={fetchServers}
-            className="bg-[#1E1F22] hover:bg-[#2B2D31] border border-[#2B2D31] text-gray-300 hover:text-white px-3.5 py-2.5 rounded-lg font-medium transition-colors text-sm"
-            title="Rafraîchir l'état des serveurs"
-          >
-            ↻
-          </button>
-        </div>
+        {/* Rappel du répertoire sur écrans plus petits */}
+        {isAdmin && (
+          <div className="flex xl:hidden items-center gap-2 mt-3 text-xs text-gray-400">
+            <span>Répertoire des serveurs :</span>
+            <button
+              onClick={() => navigate('/settings')}
+              className="font-mono bg-[#2B2D31] hover:bg-[#1E1F22] text-gray-200 px-2.5 py-1 rounded-md border border-[#1E1F22] transition-colors flex items-center gap-1.5"
+            >
+              <FolderIcon className="w-3.5 h-3.5 text-[#8EA1E1]" />
+              <span>{settings.base_path || 'Chargement...'}</span>
+              <span className="text-[#5865F2] font-sans font-medium">Modifier</span>
+            </button>
+          </div>
+        )}
       </header>
 
       {/* ========================================================= */}
@@ -290,7 +380,6 @@ export default function Home() {
                 </div>
               )}
 
-              {/* 1. Nom et Port */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="sm:col-span-2">
                   <label className="block text-xs font-bold text-gray-300 uppercase tracking-wider mb-2">
@@ -341,7 +430,6 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* 3. Choix du Type / Moteur */}
               <div>
                 <label className="block text-xs font-bold text-gray-300 uppercase tracking-wider mb-2">
                   3. Type / Moteur du serveur (convertible à tout moment par la suite)
@@ -377,7 +465,6 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* 4. Version de Minecraft & RAM */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
                 <div>
                   <label className="block text-xs font-bold text-gray-300 uppercase tracking-wider mb-2">
@@ -480,12 +567,12 @@ export default function Home() {
           <div className="bg-[#2B2D31] rounded-2xl border border-[#1E1F22] shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
             <div className="p-6 bg-[#1E1F22] border-b border-[#2B2D31] flex items-center justify-between">
               <div>
-                <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                  <span>📥</span>
+                <h2 className="text-xl font-bold text-white flex items-center gap-2.5">
+                  <DownloadIcon className="w-5 h-5 text-[#8EA1E1]" />
                   <span>Importer ou Convertir des serveurs existants</span>
                 </h2>
                 <p className="text-gray-400 text-xs mt-1">
-                  OurCraft détecte automatiquement le moteur de chaque dossier (Vanilla, Paper, Forge...) et vous permet même de le convertir à l'importation.
+                  OurCraft détecte automatiquement le moteur de chaque dossier (Vanilla, Paper, Forge...) et vous permet de le convertir à l'importation.
                 </p>
               </div>
               <button
@@ -497,7 +584,6 @@ export default function Home() {
             </div>
 
             <div className="p-6 overflow-y-auto space-y-5">
-              {/* Choix du dossier à inspecter */}
               <div>
                 <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">
                   Dossier parent à analyser
@@ -533,7 +619,6 @@ export default function Home() {
                 </div>
               )}
 
-              {/* Liste des dossiers détectés */}
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
@@ -597,7 +682,8 @@ export default function Home() {
                             />
                             <div className="min-w-0">
                               <div className="font-semibold text-sm text-white truncate flex flex-wrap items-center gap-2">
-                                <span>📁 {cand.name}</span>
+                                <FolderIcon className="w-4 h-4 text-[#8EA1E1] shrink-0" />
+                                <span>{cand.name}</span>
                                 {cand.is_minecraft_dir && !cand.already_imported && (
                                   <span className="text-[10px] bg-[#23A559]/20 text-[#23A559] px-2 py-0.5 rounded-full font-medium">
                                     Détecté : {detectedEngine} ({cand.detected_version || 'LATEST'})
@@ -605,7 +691,7 @@ export default function Home() {
                                 )}
                                 {isConverting && !cand.already_imported && (
                                   <span className="text-[10px] bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded-full font-bold">
-                                    🔄 Sera converti en {targetEngine}
+                                    Sera converti en {targetEngine}
                                   </span>
                                 )}
                               </div>
@@ -626,7 +712,6 @@ export default function Home() {
                                     setEngineOverrides((prev) => ({ ...prev, [cand.name]: e.target.value }))
                                   }
                                   className="bg-[#2B2D31] text-white border border-[#111214] rounded-lg px-2.5 py-1 text-xs focus:outline-none focus:border-[#5865F2]"
-                                  title="Garder le moteur d'origine ou convertir ce serveur"
                                 >
                                   {ENGINE_OPTIONS.map((eng) => (
                                     <option key={eng.id} value={eng.id}>
@@ -694,15 +779,17 @@ export default function Home() {
             <div className="flex flex-wrap justify-center gap-3">
               <button
                 onClick={openCreateModal}
-                className="bg-[#23A559] hover:bg-[#1D8B4A] text-white px-5 py-2.5 rounded-lg font-semibold transition-colors text-sm"
+                className="bg-[#23A559] hover:bg-[#1D8B4A] text-white px-5 py-2.5 rounded-lg font-semibold transition-colors text-sm flex items-center gap-2"
               >
-                ＋ Nouveau Serveur
+                <PlusIcon className="w-4 h-4" />
+                <span>Nouveau Serveur</span>
               </button>
               <button
                 onClick={openImportModal}
-                className="bg-[#5865F2] hover:bg-[#4752C4] text-white px-5 py-2.5 rounded-lg font-semibold transition-colors text-sm"
+                className="bg-[#5865F2] hover:bg-[#4752C4] text-white px-5 py-2.5 rounded-lg font-semibold transition-colors text-sm flex items-center gap-2"
               >
-                📥 Importer des serveurs existants
+                <DownloadIcon className="w-4 h-4" />
+                <span>Importer des serveurs existants</span>
               </button>
             </div>
           )}
